@@ -2,6 +2,7 @@ import copy
 import csv
 import functools
 import math
+import os
 import random
 from collections import namedtuple
 
@@ -16,6 +17,8 @@ from torch.utils.data import Dataset
 from util.disk import getCache
 from util.logconf import logging
 from util.util import XyzTuple, xyz2irc
+
+DATA_DIR = os.getenv("DATA_DIR")
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -80,7 +83,7 @@ def getNoduleInfoList(requireOnDisk_bool=True):
 
 class CTImage:
     def __init__(self, nod_id):
-        nrrd_path = f"/data/etay/lung_hist_dat/original_dat_nrrds/nod{nod_id}.nrrd"
+        nrrd_path = os.path.join(DATA_DIR, f"nod{nod_id}.nrrd")
 
         reader = sitk.ImageFileReader()
         reader.SetImageIO("NrrdImageIO")

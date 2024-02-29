@@ -10,11 +10,11 @@ import torch
 import torch.nn as nn
 from torch.optim import SGD
 from torch.utils.data import DataLoader
+from model import NoduleRecurrenceClassifier
 
 from util.util import enumerateWithEstimate
 from datasets import NoduleDataset
 from util.logconf import logging
-import monai
 from constants import METRICS_LABEL_NDX, METRICS_LOSS_NDX, METRICS_PRED_NDX, METRICS_SIZE
 
 
@@ -121,7 +121,7 @@ class NoduleTrainingApp:
 
     def init_model(self):
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
-        model = monai.networks.nets.densenet121(dropout_prob=0.5,spatial_dims=3,in_channels=1, out_channels=2)
+        model = NoduleRecurrenceClassifier(dropout_prob=0.5,spatial_dims=3,in_channels=1, out_channels=2)
         # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
 
         if self.cli_args.finetune:
