@@ -1,37 +1,7 @@
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.poetry]
-name = "ct_lung_class"
-version = "0.1.0"
-authors = ["me"]
-description = "Your project description"
-
-[[tool.poetry.source]]
-name = "pytorch-cuda"
-url = "https://download.pytorch.org/whl/"
-priority = "supplemental"
-
-# Add your project dependencies
-[tool.poetry.dependencies]
-python = "^3.8"
-pydicom = "^2.4.4"
-numpy = "^1.24.0"
-SimpleITK = "^2.3.1"
-torch = { version = "1.8.1+cu101", source = "pytorch-cuda" }
-#torch = "^2.0"
-diskcache = "^5.6"
-cassandra-driver = "^3.29.0"
-monai = "1.1.0"
-
-[tool.poetry.group.dev.dependencies]
-flake8 = "^5.0"
-black = "^23.12.1"
-isort = "^5.13.2"
-
 [tool.black]
 line-length = 99
+target-version = ['py37']
+
 
 [tool.isort]
 profile = "black"
