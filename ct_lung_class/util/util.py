@@ -12,7 +12,9 @@ IrcTuple = collections.namedtuple("IrcTuple", ["index", "row", "col"])
 XyzTuple = collections.namedtuple("XyzTuple", ["x", "y", "z"])
 
 
-def irc2xyz(coord_irc, origin_xyz, vxSize_xyz, direction_a):
+def irc2xyz(
+    coord_irc: IrcTuple, origin_xyz: XyzTuple, vxSize_xyz: XyzTuple, direction_a: np.array
+) -> XyzTuple:
     cri_a = np.array(coord_irc)[::-1]
     origin_a = np.array(origin_xyz)
     vxSize_a = np.array(vxSize_xyz)
@@ -20,7 +22,9 @@ def irc2xyz(coord_irc, origin_xyz, vxSize_xyz, direction_a):
     return XyzTuple(*coords_xyz)
 
 
-def xyz2irc(coord_xyz, origin_xyz, vxSize_xyz, direction_a):
+def xyz2irc(
+    coord_xyz: XyzTuple, origin_xyz: XyzTuple, vxSize_xyz: XyzTuple, direction_a: np.array
+) -> IrcTuple:
     origin_a = np.array(origin_xyz)
     vxSize_a = np.array(vxSize_xyz)
     coord_a = np.array(coord_xyz)
@@ -46,7 +50,7 @@ def importstr(module_str, from_=None):
     if from_:
         try:
             return getattr(module, from_)
-        except:
+        except AttributeError:
             raise ImportError(f"{module_str}.{from_}")
     return module
 
@@ -59,9 +63,8 @@ def prhist(ary, prefix_str=None, **kwargs):
 
     count_ary, bins_ary = np.histogram(ary, **kwargs)
     for i in range(count_ary.shape[0]):
-        print(
-            "{}{:-8.2f}".format(prefix_str, bins_ary[i]), "{:-10}".format(count_ary[i])
-        )
+        print("{}{:-8.2f}".format(prefix_str,
+              bins_ary[i]), "{:-10}".format(count_ary[i]))
     print("{}{:-8.2f}".format(prefix_str, bins_ary[-1]))
 
 
@@ -129,18 +132,15 @@ def enumerateWithEstimate(
     while print_ndx < start_ndx * backoff:
         print_ndx *= backoff
 
-    log.warning(
-        f"{desc_str} ----/{iter_len}, starting"
-    )
+    log.warning(f"{desc_str} ----/{iter_len}, starting")
     start_ts = time.time()
     for current_ndx, item in enumerate(iter):
         yield (current_ndx, item)
         if current_ndx == print_ndx:
             # ... <1>
             duration_sec = (
-                (time.time() - start_ts)
-                / (current_ndx - start_ndx + 1)
-                * (iter_len - start_ndx)
+                (time.time() - start_ts) / (current_ndx -
+                                            start_ndx + 1) * (iter_len - start_ndx)
             )
 
             done_dt = datetime.datetime.fromtimestamp(start_ts + duration_sec)

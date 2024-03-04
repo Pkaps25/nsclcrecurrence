@@ -1,5 +1,7 @@
-import matplotlib.pyplot as plt
 import json
+
+import matplotlib.pyplot as plt
+
 with open("loss.json", "r") as jsonfile:
     loss_dict = json.load(jsonfile)
 

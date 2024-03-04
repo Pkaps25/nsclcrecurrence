@@ -5,18 +5,21 @@ import math
 import os
 import random
 from collections import namedtuple
+from typing import List, Tuple, TypeAlias
 
 import numpy as np
 import SimpleITK as sitk
+
 # import torchio as tio
 import torch
 import torch.cuda
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+
 # from transforms import RandomCrop
 from util.disk import getCache
 from util.logconf import logging
-from util.util import XyzTuple, xyz2irc
+from util.util import IrcTuple, XyzTuple, xyz2irc
 
 DATA_DIR = os.getenv("DATA_DIR")
 
@@ -31,6 +34,8 @@ NoduleInfoTuple = namedtuple(
     "NoduleInfoTuple",
     "isNodule_bool, nod_id,center_xyz",
 )
+
+DatasetItem: TypeAlias = Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]
 
 
 def get_coord_csv(c1, c2, c3):
@@ -51,7 +56,7 @@ def get_coord_csv(c1, c2, c3):
 
 
 @functools.lru_cache(1)
-def getNoduleInfoList(requireOnDisk_bool=True):
+def getNoduleInfoList(requireOnDisk_bool=True) -> List[NoduleInfoTuple]:
     coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations.csv"
     # take out 103, 128, 20(2), 26, bc errors in CT slice skipping
     ids_to_exclude = set(["103", "128", "20", "26", "29", "69", "61"])
@@ -66,7 +71,7 @@ def getNoduleInfoList(requireOnDisk_bool=True):
             if nod_name in ids_to_exclude:
                 log.info(f"EXCLUDING: {nod_name}")
                 continue
-            
+
             center = get_coord_csv(row[4], row[5], row[6])
             label = bool(int(row[7]))
             nodule_infos.append(
@@ -82,7 +87,7 @@ def getNoduleInfoList(requireOnDisk_bool=True):
 
 
 class CTImage:
-    def __init__(self, nod_id):
+    def __init__(self, nod_id: int):
         nrrd_path = os.path.join(DATA_DIR, f"nod{nod_id}.nrrd")
 
         reader = sitk.ImageFileReader()
@@ -105,7 +110,7 @@ class CTImage:
         self.vxSize_xyz = XyzTuple(*ct_nrrd.GetSpacing())
         self.direction_a = np.array(ct_nrrd.GetDirection()).reshape(3, 3)
 
-    def getRawNodule(self, center_xyz, width_irc):
+    def getRawNodule(self, center_xyz: XyzTuple, width_irc: IrcTuple) -> Tuple[np.array, IrcTuple]:
         center_irc = xyz2irc(
             center_xyz,
             self.origin_xyz,
@@ -120,7 +125,8 @@ class CTImage:
 
             # print(self.nod_id)
             assert center_val >= 0 and center_val < self.hu_a.shape[axis], repr(
-                [self.nod_id, center_xyz, self.origin_xyz, self.vxSize_xyz, center_irc, axis]
+                [self.nod_id, center_xyz, self.origin_xyz,
+                    self.vxSize_xyz, center_irc, axis]
             )
             if start_ndx < 0:
                 start_ndx = 0
@@ -131,25 +137,31 @@ class CTImage:
                 start_ndx = int(self.hu_a.shape[axis] - width_irc[axis])
 
             slice_list.append(slice(start_ndx, end_ndx))
-         
+
         return self.hu_a[tuple(slice_list)], center_irc
 
 
-
 @functools.lru_cache(1, typed=True)
-def getCt(nod_id):
+def getCt(nod_id: int) -> CTImage:
     return CTImage(nod_id)
 
 
 @raw_cache.memoize(typed=True)
-def getCtRawNodule(nod_id, center_xyz, width_irc):
+def getCtRawNodule(
+    nod_id: int, center_xyz: XyzTuple, width_irc: IrcTuple
+) -> Tuple[np.array, IrcTuple]:
     ct = getCt(nod_id)
     ct_chunk, center_irc = ct.getRawNodule(center_xyz, width_irc)
     return ct_chunk, center_irc
 
+
 def getCtAugmentedNodule(
-    augmentation_dict, nod_id, center_xyz, width_irc, use_cache=True
-):
+    augmentation_dict: dict,
+    nod_id: int,
+    center_xyz: XyzTuple,
+    width_irc: IrcTuple,
+    use_cache: bool = True,
+) -> Tuple[np.array, IrcTuple]:
     if use_cache:
         ct_chunk, center_irc = getCtRawNodule(nod_id, center_xyz, width_irc)
     else:
@@ -235,8 +247,7 @@ class NoduleDataset(Dataset):
 
         if nod_id:
             self.noduleInfo_list = [
-                x for x in self.noduleInfo_list if x.nod_id == nod_id
-            ]
+                x for x in self.noduleInfo_list if x.nod_id == nod_id]
 
         if isValSet_bool:
             assert val_stride > 0, val_stride
@@ -256,7 +267,8 @@ class NoduleDataset(Dataset):
         else:
             raise Exception("Unknown sort: " + repr(sortby_str))
 
-        self.negative_list = [nt for nt in self.noduleInfo_list if not nt.isNodule_bool]
+        self.negative_list = [
+            nt for nt in self.noduleInfo_list if not nt.isNodule_bool]
 
         self.pos_list = [nt for nt in self.noduleInfo_list if nt.isNodule_bool]
 
@@ -276,7 +288,7 @@ class NoduleDataset(Dataset):
     def __len__(self):
         return len(self.noduleInfo_list)
 
-    def __getitem__(self, ndx):
+    def __getitem__(self, ndx) -> DatasetItem:
         if self.ratio_int:
             pos_ndx = ndx // (self.ratio_int + 1)
             if ndx % (self.ratio_int + 1):
