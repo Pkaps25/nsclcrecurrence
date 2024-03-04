@@ -5,7 +5,7 @@ import math
 import os
 import random
 from collections import namedtuple
-from typing import List, Tuple, TypeAlias
+from typing import List, Tuple
 
 import numpy as np
 import SimpleITK as sitk
@@ -35,7 +35,7 @@ NoduleInfoTuple = namedtuple(
     "isNodule_bool, nod_id,center_xyz",
 )
 
-DatasetItem: TypeAlias = Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]
+DatasetItem = Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]
 
 
 def get_coord_csv(c1, c2, c3):

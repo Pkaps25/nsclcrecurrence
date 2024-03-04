@@ -19,92 +19,21 @@ from torch.utils.data import DataLoader
 from util.logconf import logging
 from util.util import enumerateWithEstimate
 
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from ddp import ddp_setup
+
 LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
 OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+world_size = torch.cuda.device_count()
 
 
 class NoduleTrainingApp:
-    def __init__(self, sys_argv=None):
-        if sys_argv is None:
-            sys_argv = sys.argv[1:]
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument(
-            "--batch-size",
-            help="Batch size to use for training",
-            default=8,
-            type=int,
-        )
-        parser.add_argument(
-            "--num-workers",
-            help="Number of worker processes for background data loading",
-            default=4,
-            type=int,
-        )
-        parser.add_argument(
-            "--epochs",
-            help="Number of epochs to train for",
-            default=50,
-            type=int,
-        )
-        parser.add_argument(
-            "--balanced",
-            help="Balance the training data to half positive, half negative.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--augmented",
-            help="Augment the training data.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--augment-flip",
-            help="Augment the training data by randomly flipping the data left-right, up-down, and front-back.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--augment-offset",
-            help="Augment the training data by randomly offsetting the data slightly along the X and Y axes.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--augment-scale",
-            help="Augment the training data by randomly increasing or decreasing the size of the candidate.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--augment-rotate",
-            help="Augment the training data by randomly rotating the data around the head-foot axis.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--augment-noise",
-            help="Augment the training data by randomly adding noise to the data.",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "--finetune",
-            help="Start finetuning from this model.",
-            default="",
-        )
-
-        parser.add_argument(
-            "--finetune-depth",
-            help="Number of blocks (counted from head) to include in finetuning",
-            type=int,
-            default=1,
-        )
-
-        self.cli_args = parser.parse_args(sys_argv)
+    def __init__(self, cli_args):
+        self.cli_args = cli_args
         self.time_str = datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
 
         self.totalTrainingSamples_count = 0
@@ -123,14 +52,8 @@ class NoduleTrainingApp:
 
         self.use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda" if self.use_cuda else "cpu")
-        self.model = self.init_model()
-        self.optimizer = self.init_optimizer()
 
-        optim_name = str(self.optimizer).replace("\n", "")
-        self.run_dir = f"log_{self.model._get_name()}_{optim_name}_{self.time_str}.log"
-        self.init_logs_outputs()
-
-    def init_model(self) -> torch.nn.Module:
+    def init_model(self, rank: int) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
             dropout_prob=0.5, spatial_dims=3, in_channels=1, out_channels=2
@@ -156,11 +79,8 @@ class NoduleTrainingApp:
                     p.requires_grad_(False)
 
         if self.use_cuda:
-            num_devices = torch.cuda.device_count()
-            logger.info(f"Using CUDA; {num_devices} devices.")
-            if num_devices > 1:  # TODO update to DistributedDataParallel on version bump
-                model = nn.DataParallel(model, device_ids=[0])
-            model = model.to(self.device)
+            model = model.to(rank)
+            model = DDP(model, device_ids=[rank])
 
         return model
 
@@ -181,6 +101,7 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
+            sampler=DistributedSampler(train_ds)
         )
 
         return train_dl
@@ -196,6 +117,7 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
+            sampler=DistributedSampler(val_ds)
         )
 
         return val_dl
@@ -212,8 +134,17 @@ class NoduleTrainingApp:
         file_handler = logging.FileHandler(log_file)
         logger.addHandler(file_handler)
 
-    def main(self):
+    def main(self, rank: int, *args):
+        print(rank, args)
         logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
+
+        ddp_setup(rank, world_size)
+        self.model = self.init_model(rank)
+        self.optimizer = self.init_optimizer()
+
+        optim_name = str(self.optimizer).replace("\n", "")
+        self.run_dir = f"log_{self.model._get_name()}_{optim_name}_{self.time_str}.log"
+        self.init_logs_outputs()
 
         best_f1 = -1
         best_accuracy = -1
@@ -226,6 +157,7 @@ class NoduleTrainingApp:
         val_dl = self.init_val_dataloader()
 
         for epoch_ndx in range(1, self.cli_args.epochs + 1):
+            train_dl.sampler.set_epoch(epoch_ndx)
 
             logger.info(
                 f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
@@ -458,4 +390,79 @@ class NoduleTrainingApp:
 
 
 if __name__ == "__main__":
-    NoduleTrainingApp().main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--batch-size",
+        help="Batch size to use for training",
+        default=8,
+        type=int,
+    )
+    parser.add_argument(
+        "--num-workers",
+        help="Number of worker processes for background data loading",
+        default=4,
+        type=int,
+        )
+    parser.add_argument(
+        "--epochs",
+        help="Number of epochs to train for",
+        default=50,
+        type=int,
+    )
+    parser.add_argument(
+        "--balanced",
+        help="Balance the training data to half positive, half negative.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--augmented",
+        help="Augment the training data.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--augment-flip",
+        help="Augment the training data by randomly flipping the data left-right, up-down, and front-back.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--augment-offset",
+        help="Augment the training data by randomly offsetting the data slightly along the X and Y axes.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--augment-scale",
+        help="Augment the training data by randomly increasing or decreasing the size of the candidate.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--augment-rotate",
+        help="Augment the training data by randomly rotating the data around the head-foot axis.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--augment-noise",
+        help="Augment the training data by randomly adding noise to the data.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--finetune",
+        help="Start finetuning from this model.",
+        default="",
+    )
+
+    parser.add_argument(
+        "--finetune-depth",
+        help="Number of blocks (counted from head) to include in finetuning",
+        type=int,
+        default=1,
+    )
+    cli_args = parser.parse_args()
+    mp.spawn(NoduleTrainingApp(cli_args).main, args=(world_size,), nprocs=world_size)
+
