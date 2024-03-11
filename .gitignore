@@ -4,3 +4,4 @@ data-unversioned
 *.pth
 logs/
 *.png
+xnat.cfg
