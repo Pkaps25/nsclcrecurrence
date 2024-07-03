@@ -1,14 +1,10 @@
 import copy
-import csv
 import functools
 import math
-import os
 import random
-from collections import namedtuple
 from typing import List, Tuple
 
 import numpy as np
-import SimpleITK as sitk
 
 # import torchio as tio
 import torch
@@ -17,11 +13,15 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 # from transforms import RandomCrop
+from datatsets_peter import (
+    Coord3D, NoduleInfoGenerator, PrasadSampleGeneratoryStrategy, 
+    R17SampleGeneratorStrategy, NoduleImage, NoduleInfoTuple
+)
 from util.disk import getCache
 from util.logconf import logging
-from util.util import IrcTuple, XyzTuple, xyz2irc
+from util.util import IrcTuple 
 
-DATA_DIR = os.getenv("DATA_DIR")
+# DATA_DIR = os.getenv("DATA_DIR")
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -30,144 +30,101 @@ log.setLevel(logging.DEBUG)
 raw_cache = getCache("part2ch11_raw")
 
 
-NoduleInfoTuple = namedtuple(
-    "NoduleInfoTuple",
-    "isNodule_bool, nod_id,center_xyz",
-)
+# NoduleInfoTuple = namedtuple(
+#     "NoduleInfoTuple",
+#     ["isNodule_bool", "nod_id", "center_xyz", "file_path"]
+# )
 
-DatasetItem = Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]
-
-
-def get_coord_csv(c1, c2, c3):
-    if "R" in c1:
-        x = -float(c1.strip("R"))
-    else:
-        x = float(c1.strip("L"))
-    if "A" in c2:
-        y = -float(c2.strip("A"))
-    else:
-        y = float(c2.strip("P"))
-    if "I" in c3:
-        z = -float(c3.strip("I"))
-    else:
-        z = float(c3.strip("S"))
-    center = tuple([x, y, z])
-    return center
+DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 
-@functools.lru_cache(1)
-def getNoduleInfoList(requireOnDisk_bool=True) -> List[NoduleInfoTuple]:
-    coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations.csv"
-    # take out 103, 128, 20(2), 26, bc errors in CT slice skipping
-    ids_to_exclude = set(["103", "128", "20", "26", "29", "69", "61"])
-
-    nodule_infos = []
-
-    with open(coord_file, newline="") as f:
-        reader = csv.reader(f, delimiter=",", quoting=csv.QUOTE_NONE)
-        next(reader)
-        for row in reader:
-            nod_name = row[0]
-            if nod_name in ids_to_exclude:
-                log.info(f"EXCLUDING: {nod_name}")
-                continue
-
-            center = get_coord_csv(row[4], row[5], row[6])
-            label = bool(int(row[7]))
-            nodule_infos.append(
-                NoduleInfoTuple(
-                    label,
-                    nod_name,
-                    center,
-                )
-            )
-
-    nodule_infos.sort(reverse=True)
-    return nodule_infos
+def getNoduleInfoList() -> List[NoduleInfoTuple]:
+    generator = NoduleInfoGenerator()
+    generator.add_strategies(PrasadSampleGeneratoryStrategy, R17SampleGeneratorStrategy)
+    return generator.generate_all_samples()
 
 
-class CTImage:
-    def __init__(self, nod_id: int):
-        nrrd_path = os.path.join(DATA_DIR, f"nod{nod_id}.nrrd")
+# class CTImage:
+#     def __init__(self, nod_id, nrrd_path):
+#         # nrrd_path = os.path.join(DATA_DIR, f"nod{nod_id}.nrrd")
+#         # nrrd_path = os.path.join("/data/kaplinsp/prasad_d/", f"{nod_id}.nrrd")
 
-        reader = sitk.ImageFileReader()
-        reader.SetImageIO("NrrdImageIO")
-        reader.SetFileName(nrrd_path)
-        ct_nrrd = reader.Execute()
-        ct_a = np.array(sitk.GetArrayFromImage(ct_nrrd), dtype=np.float32)
+#         reader = sitk.ImageFileReader()
+#         reader.SetImageIO("NrrdImageIO")
+#         reader.SetFileName(nrrd_path)
+#         ct_nrrd = reader.Execute()
+#         ct_a = np.array(sitk.GetArrayFromImage(ct_nrrd), dtype=np.float32)
 
-        # CTs are natively expressed in https://en.wikipedia.org/wiki/Hounsfield_scale
-        # HU are scaled oddly, with 0 g/cc (air, approximately) being -1000 and 1 g/cc (water) being 0.
-        # The lower bound gets rid of negative density stuff used to indicate out-of-FOV
-        # The upper bound nukes any weird hotspots and clamps bone down
+#         # CTs are natively expressed in https://en.wikipedia.org/wiki/Hounsfield_scale
+#         # HU are scaled oddly, with 0 g/cc (air, approximately) being -1000 and 1 g/cc (water) being 0.
+#         # The lower bound gets rid of negative density stuff used to indicate out-of-FOV
+#         # The upper bound nukes any weird hotspots and clamps bone down
 
-        ct_a.clip(-1350, 150, ct_a)
+#         ct_a.clip(-1350, 150, ct_a)
 
-        self.nod_id = nod_id
-        self.hu_a = ct_a
+#         self.nod_id = nod_id
+#         self.hu_a = ct_a
 
-        self.origin_xyz = XyzTuple(*ct_nrrd.GetOrigin())
-        self.vxSize_xyz = XyzTuple(*ct_nrrd.GetSpacing())
-        self.direction_a = np.array(ct_nrrd.GetDirection()).reshape(3, 3)
+#         self.origin_xyz = XyzTuple(*ct_nrrd.GetOrigin())
+#         self.vxSize_xyz = XyzTuple(*ct_nrrd.GetSpacing())
+#         self.direction_a = np.array(ct_nrrd.GetDirection()).reshape(3, 3)
 
-    def getRawNodule(self, center_xyz: XyzTuple, width_irc: IrcTuple) -> Tuple[np.array, IrcTuple]:
-        center_irc = xyz2irc(
-            center_xyz,
-            self.origin_xyz,
-            self.vxSize_xyz,
-            self.direction_a,
-        )
+#     def getRawNodule(self, center_xyz: XyzTuple, width_irc: IrcTuple) -> Tuple[np.array, IrcTuple]:
+#         center_irc = xyz2irc(
+#             center_xyz,
+#             self.origin_xyz,
+#             self.vxSize_xyz,
+#             self.direction_a,
+#         )
 
-        slice_list = []
-        for axis, center_val in enumerate(center_irc):
-            start_ndx = int(round(center_val - width_irc[axis] / 2))
-            end_ndx = int(start_ndx + width_irc[axis])
+#         slice_list = []
+#         for axis, center_val in enumerate(center_irc):
+#             start_ndx = int(round(center_val - width_irc[axis] / 2))
+#             end_ndx = int(start_ndx + width_irc[axis])
 
-            # print(self.nod_id)
-            assert center_val >= 0 and center_val < self.hu_a.shape[axis], repr(
-                [self.nod_id, center_xyz, self.origin_xyz,
-                    self.vxSize_xyz, center_irc, axis]
-            )
-            if start_ndx < 0:
-                start_ndx = 0
-                end_ndx = int(width_irc[axis])
+#             # print(self.nod_id)
+#             assert center_val >= 0 and center_val < self.hu_a.shape[axis], repr(
+#                 [self.nod_id, center_xyz, self.origin_xyz, self.vxSize_xyz, center_irc, axis]
+#             )
+#             if start_ndx < 0:
+#                 start_ndx = 0
+#                 end_ndx = int(width_irc[axis])
 
-            if end_ndx > self.hu_a.shape[axis]:
-                end_ndx = self.hu_a.shape[axis]
-                start_ndx = int(self.hu_a.shape[axis] - width_irc[axis])
+#             if end_ndx > self.hu_a.shape[axis]:
+#                 end_ndx = self.hu_a.shape[axis]
+#                 start_ndx = int(self.hu_a.shape[axis] - width_irc[axis])
 
-            slice_list.append(slice(start_ndx, end_ndx))
+#             slice_list.append(slice(start_ndx, end_ndx))
 
-        return self.hu_a[tuple(slice_list)], center_irc
+#         return self.hu_a[tuple(slice_list)], center_irc
 
 
-@functools.lru_cache(1, typed=True)
-def getCt(nod_id: int) -> CTImage:
-    return CTImage(nod_id)
+# @functools.lru_cache(1, typed=True)
+# def getCt(nod_id: int, nod_path) -> CTImage:
+#     return CTImage(nod_id, nod_path)
 
 
 @raw_cache.memoize(typed=True)
 def getCtRawNodule(
-    nod_id: int, center_xyz: XyzTuple, width_irc: IrcTuple
-) -> Tuple[np.array, IrcTuple]:
-    ct = getCt(nod_id)
-    ct_chunk, center_irc = ct.getRawNodule(center_xyz, width_irc)
-    return ct_chunk, center_irc
+    noduleInfoTup: NoduleInfoTuple, width_irc: Coord3D
+) -> np.array:
+    ct: NoduleImage = noduleInfoTup.image_type(noduleInfoTup.file_path, noduleInfoTup.center_lps)
+    return ct.nodule_slice(box_dim=width_irc, segmented=False)
 
 
 def getCtAugmentedNodule(
     augmentation_dict: dict,
-    nod_id: int,
-    center_xyz: XyzTuple,
+    noduleInfoTup: NoduleInfoTuple,
     width_irc: IrcTuple,
     use_cache: bool = True,
-) -> Tuple[np.array, IrcTuple]:
+) -> np.array:
     if use_cache:
-        ct_chunk, center_irc = getCtRawNodule(nod_id, center_xyz, width_irc)
+        ct_chunk = getCtRawNodule(noduleInfoTup, width_irc)
     else:
-        ct = getCt(nod_id)
-        ct_chunk, center_irc = ct.getRawNodule(center_xyz, width_irc)
+        ct: NoduleImage = noduleInfoTup.image_type(noduleInfoTup.file_path, noduleInfoTup.center_lps)
+        ct_chunk = ct.nodule_slice(box_dim=width_irc, segmented=False)
 
+    
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
     transform_t = torch.eye(4)
 
@@ -221,7 +178,7 @@ def getCtAugmentedNodule(
 
         augmented_chunk += noise_t
 
-    return augmented_chunk[0], center_irc
+    return augmented_chunk[0]
 
 
 class NoduleDataset(Dataset):
@@ -233,21 +190,15 @@ class NoduleDataset(Dataset):
         ratio_int=0,
         sortby_str="random",
         augmentation_dict=None,
-        noduleInfo_list=None,
+        use_cache=False,
     ):
         self.ratio_int = ratio_int
         self.augmentation_dict = augmentation_dict
-
-        if noduleInfo_list:
-            self.noduleInfo_list = copy.copy(noduleInfo_list)
-            self.use_cache = False
-        else:
-            self.noduleInfo_list = copy.copy(getNoduleInfoList())
-            self.use_cache = True
+        self.use_cache = use_cache
+        self.noduleInfo_list = getNoduleInfoList()
 
         if nod_id:
-            self.noduleInfo_list = [
-                x for x in self.noduleInfo_list if x.nod_id == nod_id]
+            self.noduleInfo_list = [x for x in self.noduleInfo_list if x.nod_id == nod_id]
 
         if isValSet_bool:
             assert val_stride > 0, val_stride
@@ -261,16 +212,13 @@ class NoduleDataset(Dataset):
             random.shuffle(self.noduleInfo_list)
         elif sortby_str == "nod_id":
             # self.candidateInfo_list.sort(key=lambda x: (x.series_uid, x.center_xyz))
-            self.noduleInfo_list.sort(key=lambda x: (x.nod_id, x.center_xyz))
-        elif sortby_str == "label_and_size":
-            pass
+            self.noduleInfo_list.sort(key=lambda x: x.file_path)
         else:
             raise Exception("Unknown sort: " + repr(sortby_str))
 
-        self.negative_list = [
-            nt for nt in self.noduleInfo_list if not nt.isNodule_bool]
+        self.negative_list = [nt for nt in self.noduleInfo_list if not nt.is_nodule]
 
-        self.pos_list = [nt for nt in self.noduleInfo_list if nt.isNodule_bool]
+        self.pos_list = [nt for nt in self.noduleInfo_list if nt.is_nodule]
 
         log.info(
             "{!r}: {} {} samples".format(
@@ -289,6 +237,7 @@ class NoduleDataset(Dataset):
         return len(self.noduleInfo_list)
 
     def __getitem__(self, ndx) -> DatasetItem:
+        noduleInfo_tup: NoduleInfoTuple = None
         if self.ratio_int:
             pos_ndx = ndx // (self.ratio_int + 1)
             if ndx % (self.ratio_int + 1):
@@ -304,37 +253,29 @@ class NoduleDataset(Dataset):
         width_irc = (64, 64, 64)
 
         if self.augmentation_dict:
-            nodule_t, center_irc = getCtAugmentedNodule(
+            nodule_t = getCtAugmentedNodule(
                 self.augmentation_dict,
-                noduleInfo_tup.nod_id,
-                noduleInfo_tup.center_xyz,
+                noduleInfo_tup,
                 width_irc,
                 self.use_cache,
             )
         elif self.use_cache:
-            nodule_a, center_irc = getCtRawNodule(
-                noduleInfo_tup.nod_id,
-                noduleInfo_tup.center_xyz,
+            nodule_a = getCtRawNodule(
+                noduleInfo_tup,
                 width_irc,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
-            # nodule_t = preprocess(nodule_t)
         else:
-            ct = getCt(noduleInfo_tup.nod_id)
-            nodule_a, center_irc = ct.getRawNodule(
-                noduleInfo_tup.center_xyz,
-                width_irc,
-            )
+            ct: NoduleImage = noduleInfo_tup.image_type(noduleInfo_tup.file_path, noduleInfo_tup.center_lps)
+            nodule_a = ct.nodule_slice(box_dim=width_irc, segmented=False)
+
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
-            # nodule_t = preprocess(nodule_t)
 
         pos_t = torch.tensor(
-            [not noduleInfo_tup.isNodule_bool, noduleInfo_tup.isNodule_bool],
+            [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
             dtype=torch.long,
         )
 
-        # nodule_t = tio.RescaleIntensity(percentiles=(0.5,99.5))(nodule_t)
-        # nodule_t = tio.ZNormalization()(nodule_t)
-        return nodule_t, pos_t, noduleInfo_tup.nod_id, torch.tensor(center_irc)
+        return nodule_t, pos_t, noduleInfo_tup.nod_id 

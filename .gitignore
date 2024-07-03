@@ -5,3 +5,5 @@ data-unversioned
 logs/
 *.png
 xnat.cfg
+*csv
+ct_lung_class/*csv

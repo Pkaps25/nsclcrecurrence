@@ -1,10 +1,10 @@
 import argparse
 import os
-import sys
 from datetime import datetime
 
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import torch.nn as nn
 from constants import (
     METRICS_LABEL_NDX,
@@ -18,11 +18,6 @@ from torch.optim import SGD
 from torch.utils.data import DataLoader
 from util.logconf import logging
 from util.util import enumerateWithEstimate
-
-import torch.multiprocessing as mp
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
-from ddp import ddp_setup
 
 LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
 OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
@@ -53,7 +48,7 @@ class NoduleTrainingApp:
         self.use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda" if self.use_cuda else "cpu")
 
-    def init_model(self, rank: int) -> torch.nn.Module:
+    def init_model(self) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
             dropout_prob=0.5, spatial_dims=3, in_channels=1, out_channels=2
@@ -65,7 +60,7 @@ class NoduleTrainingApp:
             model_blocks = [
                 n for n, subm in model.named_children() if len(list(subm.parameters())) > 0
             ]
-            finetune_blocks = model_blocks[-self.cli_args.finetune_depth:]
+            finetune_blocks = model_blocks[-self.cli_args.finetune_depth :]
             model.load_state_dict(
                 {
                     k: v
@@ -79,8 +74,7 @@ class NoduleTrainingApp:
                     p.requires_grad_(False)
 
         if self.use_cuda:
-            model = model.to(rank)
-            model = DDP(model, device_ids=[rank])
+            model = model.to("cuda")
 
         return model
 
@@ -101,7 +95,6 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
-            sampler=DistributedSampler(train_ds)
         )
 
         return train_dl
@@ -117,7 +110,6 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
-            sampler=DistributedSampler(val_ds)
         )
 
         return val_dl
@@ -134,12 +126,10 @@ class NoduleTrainingApp:
         file_handler = logging.FileHandler(log_file)
         logger.addHandler(file_handler)
 
-    def main(self, rank: int, *args):
-        print(rank, args)
+    def main(self, *args):
         logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
 
-        ddp_setup(rank, world_size)
-        self.model = self.init_model(rank)
+        self.model = self.init_model()
         self.optimizer = self.init_optimizer()
 
         optim_name = str(self.optimizer).replace("\n", "")
@@ -157,15 +147,13 @@ class NoduleTrainingApp:
         val_dl = self.init_val_dataloader()
 
         for epoch_ndx in range(1, self.cli_args.epochs + 1):
-            train_dl.sampler.set_epoch(epoch_ndx)
 
             logger.info(
                 f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
             )
 
             trnMetrics_t = self.train(epoch_ndx, train_dl)
-            it_train_metric = self.log_metrics(
-                epoch_ndx, "train", trnMetrics_t)
+            it_train_metric = self.log_metrics(epoch_ndx, "train", trnMetrics_t)
             train_metrics.append(list(it_train_metric))
 
             valMetrics_t = self.validate(epoch_ndx, val_dl)
@@ -181,8 +169,7 @@ class NoduleTrainingApp:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                     },
-                    os.path.join(OUTPUT_PATH, self.run_dir,
-                                 "best_f1_model.pth"),
+                    os.path.join(OUTPUT_PATH, self.run_dir, "best_f1_model.pth"),
                 )
             if val_accuracy > best_accuracy:  # best val accuracy
                 best_accuracy = val_accuracy
@@ -192,8 +179,7 @@ class NoduleTrainingApp:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                     },
-                    os.path.join(OUTPUT_PATH, self.run_dir,
-                                 "best_accuracy_model.pth"),
+                    os.path.join(OUTPUT_PATH, self.run_dir, "best_accuracy_model.pth"),
                 )
             if val_loss < best_loss:  # best val loss
                 best_loss = val_loss
@@ -203,8 +189,7 @@ class NoduleTrainingApp:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                     },
-                    os.path.join(OUTPUT_PATH, self.run_dir,
-                                 "best_loss_model.pth"),
+                    os.path.join(OUTPUT_PATH, self.run_dir, "best_loss_model.pth"),
                 )
 
         torch.save(train_metrics, "train_metrics.pth")
@@ -269,7 +254,7 @@ class NoduleTrainingApp:
     def compute_batch_loss(
         self, batch_ndx: int, batch_tup: DatasetItem, batch_size: int, metrics_g: torch.Tensor
     ) -> torch.Tensor:
-        input_t, label_t, _, _ = batch_tup
+        input_t, label_t, _,  = batch_tup
 
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
@@ -316,9 +301,7 @@ class NoduleTrainingApp:
         neg_count = int(negative_label_mask.sum())
         pos_count = int(positive_label_mask.sum())
 
-        neg_correct = int(
-            (negative_label_mask & negative_predicted_mask).sum()
-        )
+        neg_correct = int((negative_label_mask & negative_predicted_mask).sum())
         true_positive_count = pos_correct = int(
             (positive_label_mask & positive_predicted_mask).sum()
         )
@@ -328,13 +311,10 @@ class NoduleTrainingApp:
 
         metrics_dict = {}
         metrics_dict["loss/all"] = metrics[METRICS_LOSS_NDX].mean()
-        metrics_dict["loss/neg"] = metrics[METRICS_LOSS_NDX,
-                                           negative_label_mask].mean()
-        metrics_dict["loss/pos"] = metrics[METRICS_LOSS_NDX,
-                                           positive_label_mask].mean()
+        metrics_dict["loss/neg"] = metrics[METRICS_LOSS_NDX, negative_label_mask].mean()
+        metrics_dict["loss/pos"] = metrics[METRICS_LOSS_NDX, positive_label_mask].mean()
 
-        metrics_dict["correct/all"] = (pos_correct +
-                                       neg_correct) / metrics.shape[1] * 100
+        metrics_dict["correct/all"] = (pos_correct + neg_correct) / metrics.shape[1] * 100
         metrics_dict["correct/neg"] = (neg_correct) / neg_count * 100
         metrics_dict["correct/pos"] = (pos_correct) / pos_count * 100
 
@@ -345,8 +325,7 @@ class NoduleTrainingApp:
             true_positive_count + false_negative_count
         )
 
-        metrics_dict["pr/f1_score"] = 2 * \
-            (precision * recall) / (precision + recall)
+        metrics_dict["pr/f1_score"] = 2 * (precision * recall) / (precision + recall)
 
         logger.info(
             (
@@ -391,6 +370,7 @@ class NoduleTrainingApp:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    mp.set_start_method('spawn')
     parser.add_argument(
         "--batch-size",
         help="Batch size to use for training",
@@ -402,7 +382,7 @@ if __name__ == "__main__":
         help="Number of worker processes for background data loading",
         default=4,
         type=int,
-        )
+    )
     parser.add_argument(
         "--epochs",
         help="Number of epochs to train for",
@@ -464,5 +444,4 @@ if __name__ == "__main__":
         default=1,
     )
     cli_args = parser.parse_args()
-    mp.spawn(NoduleTrainingApp(cli_args).main, args=(world_size,), nprocs=world_size)
-
+    NoduleTrainingApp(cli_args).main()
