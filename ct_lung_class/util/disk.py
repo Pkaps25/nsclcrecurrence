@@ -75,7 +75,7 @@ class GzipDisk(Disk):
 
 def getCache(scope_str):
     return FanoutCache(
-        "data-unversioned/cache/" + scope_str,
+        "/data/kaplinsp/data-cache/data-unversioned/cache/" + scope_str,
         disk=Disk,
         shards=64,
         timeout=1,

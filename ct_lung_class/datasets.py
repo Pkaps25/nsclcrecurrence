@@ -3,8 +3,10 @@ import functools
 import math
 import random
 from typing import List, Tuple
+import sys
 
 import numpy as np
+
 
 # import torchio as tio
 import torch
@@ -27,8 +29,8 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 
 
-raw_cache = getCache("part2ch11_raw")
-
+image_cache = getCache("image_slices")
+seg_cache = getCache("segmentations")
 
 # NoduleInfoTuple = namedtuple(
 #     "NoduleInfoTuple",
@@ -41,76 +43,37 @@ DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 def getNoduleInfoList() -> List[NoduleInfoTuple]:
     generator = NoduleInfoGenerator()
     generator.add_strategies(PrasadSampleGeneratoryStrategy, R17SampleGeneratorStrategy)
+    # generator.add_strategies(R17SampleGeneratorStrategy)
     return generator.generate_all_samples()
 
 
-# class CTImage:
-#     def __init__(self, nod_id, nrrd_path):
-#         # nrrd_path = os.path.join(DATA_DIR, f"nod{nod_id}.nrrd")
-#         # nrrd_path = os.path.join("/data/kaplinsp/prasad_d/", f"{nod_id}.nrrd")
 
-#         reader = sitk.ImageFileReader()
-#         reader.SetImageIO("NrrdImageIO")
-#         reader.SetFileName(nrrd_path)
-#         ct_nrrd = reader.Execute()
-#         ct_a = np.array(sitk.GetArrayFromImage(ct_nrrd), dtype=np.float32)
-
-#         # CTs are natively expressed in https://en.wikipedia.org/wiki/Hounsfield_scale
-#         # HU are scaled oddly, with 0 g/cc (air, approximately) being -1000 and 1 g/cc (water) being 0.
-#         # The lower bound gets rid of negative density stuff used to indicate out-of-FOV
-#         # The upper bound nukes any weird hotspots and clamps bone down
-
-#         ct_a.clip(-1350, 150, ct_a)
-
-#         self.nod_id = nod_id
-#         self.hu_a = ct_a
-
-#         self.origin_xyz = XyzTuple(*ct_nrrd.GetOrigin())
-#         self.vxSize_xyz = XyzTuple(*ct_nrrd.GetSpacing())
-#         self.direction_a = np.array(ct_nrrd.GetDirection()).reshape(3, 3)
-
-#     def getRawNodule(self, center_xyz: XyzTuple, width_irc: IrcTuple) -> Tuple[np.array, IrcTuple]:
-#         center_irc = xyz2irc(
-#             center_xyz,
-#             self.origin_xyz,
-#             self.vxSize_xyz,
-#             self.direction_a,
-#         )
-
-#         slice_list = []
-#         for axis, center_val in enumerate(center_irc):
-#             start_ndx = int(round(center_val - width_irc[axis] / 2))
-#             end_ndx = int(start_ndx + width_irc[axis])
-
-#             # print(self.nod_id)
-#             assert center_val >= 0 and center_val < self.hu_a.shape[axis], repr(
-#                 [self.nod_id, center_xyz, self.origin_xyz, self.vxSize_xyz, center_irc, axis]
-#             )
-#             if start_ndx < 0:
-#                 start_ndx = 0
-#                 end_ndx = int(width_irc[axis])
-
-#             if end_ndx > self.hu_a.shape[axis]:
-#                 end_ndx = self.hu_a.shape[axis]
-#                 start_ndx = int(self.hu_a.shape[axis] - width_irc[axis])
-
-#             slice_list.append(slice(start_ndx, end_ndx))
-
-#         return self.hu_a[tuple(slice_list)], center_irc
-
-
-# @functools.lru_cache(1, typed=True)
-# def getCt(nod_id: int, nod_path) -> CTImage:
-#     return CTImage(nod_id, nod_path)
-
-
-@raw_cache.memoize(typed=True)
+@image_cache.memoize(typed=True)
 def getCtRawNodule(
-    noduleInfoTup: NoduleInfoTuple, width_irc: Coord3D
-) -> np.array:
-    ct: NoduleImage = noduleInfoTup.image_type(noduleInfoTup.file_path, noduleInfoTup.center_lps)
-    return ct.nodule_slice(box_dim=width_irc, segmented=False)
+    nodule_file_path: str,
+    image_type: NoduleImage,
+    center_lps: Coord3D,
+    width_irc: Coord3D,
+) -> Tuple[np.array, Tuple[slice,slice,slice]]:
+    ct: NoduleImage = image_type(nodule_file_path, center_lps)
+    return ct.nodule_slice(box_dim=width_irc)
 
+
+@seg_cache.memoize(typed=True)
+def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
+    log.info(f"Segmenting nodule for {nodule_file_path}")
+    ct: NoduleImage = image_type(nodule_file_path, center_lps)
+    return ct.lung_segmentation()
+
+def slice_and_pad_segmentation(nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Tuple[slice,slice,slice]):
+    segmentation = get_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
+    sliced_seg = segmentation[slice_3d]
+    pad_width = [(0, max(0, box_dim[2-i] - sliced_seg.shape[i])) for i in range(3)]
+    padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode='constant', constant_values=0)
+    return padded_arr
+    
+def preprocess(image: np.array) -> np.array:
+    pass
 
 def getCtAugmentedNodule(
     augmentation_dict: dict,
@@ -119,10 +82,10 @@ def getCtAugmentedNodule(
     use_cache: bool = True,
 ) -> np.array:
     if use_cache:
-        ct_chunk = getCtRawNodule(noduleInfoTup, width_irc)
+        ct_chunk, slice_3d = getCtRawNodule(noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, width_irc)
     else:
         ct: NoduleImage = noduleInfoTup.image_type(noduleInfoTup.file_path, noduleInfoTup.center_lps)
-        ct_chunk = ct.nodule_slice(box_dim=width_irc, segmented=False)
+        ct_chunk, slice_3d = ct.nodule_slice(box_dim=width_irc)
 
     
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
@@ -178,7 +141,7 @@ def getCtAugmentedNodule(
 
         augmented_chunk += noise_t
 
-    return augmented_chunk[0]
+    return augmented_chunk[0], slice_3d
 
 
 class NoduleDataset(Dataset):
@@ -190,12 +153,14 @@ class NoduleDataset(Dataset):
         ratio_int=0,
         sortby_str="random",
         augmentation_dict=None,
-        use_cache=False,
+        use_cache=True,
+        segmented=True,
     ):
         self.ratio_int = ratio_int
         self.augmentation_dict = augmentation_dict
         self.use_cache = use_cache
-        self.noduleInfo_list = getNoduleInfoList()
+        self.noduleInfo_list = copy.copy(getNoduleInfoList())
+        self.segmented = segmented
 
         if nod_id:
             self.noduleInfo_list = [x for x in self.noduleInfo_list if x.nod_id == nod_id]
@@ -235,6 +200,7 @@ class NoduleDataset(Dataset):
 
     def __len__(self):
         return len(self.noduleInfo_list)
+    
 
     def __getitem__(self, ndx) -> DatasetItem:
         noduleInfo_tup: NoduleInfoTuple = None
@@ -250,25 +216,27 @@ class NoduleDataset(Dataset):
         else:
             noduleInfo_tup = self.noduleInfo_list[ndx]
 
-        width_irc = (64, 64, 64)
+        width_irc = (40, 40, 30)
 
         if self.augmentation_dict:
-            nodule_t = getCtAugmentedNodule(
+            nodule_t, slice_3d = getCtAugmentedNodule(
                 self.augmentation_dict,
                 noduleInfo_tup,
                 width_irc,
                 self.use_cache,
             )
         elif self.use_cache:
-            nodule_a = getCtRawNodule(
-                noduleInfo_tup,
+            nodule_a, slice_3d = getCtRawNodule(
+                noduleInfo_tup.file_path,
+                noduleInfo_tup.image_type,
+                noduleInfo_tup.center_lps,
                 width_irc,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
         else:
             ct: NoduleImage = noduleInfo_tup.image_type(noduleInfo_tup.file_path, noduleInfo_tup.center_lps)
-            nodule_a = ct.nodule_slice(box_dim=width_irc, segmented=False)
+            nodule_a, slice_3d = ct.nodule_slice(box_dim=width_irc)
 
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
@@ -277,5 +245,8 @@ class NoduleDataset(Dataset):
             [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
             dtype=torch.long,
         )
+        segmentation = slice_and_pad_segmentation(noduleInfo_tup, width_irc, slice_3d)
+        segmentation_t = torch.from_numpy(segmentation).unsqueeze(0)
+        nodule_t_segmented = torch.cat([nodule_t, segmentation_t], dim=0)
 
-        return nodule_t, pos_t, noduleInfo_tup.nod_id 
+        return nodule_t_segmented, pos_t, noduleInfo_tup.nod_id 

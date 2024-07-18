@@ -57,26 +57,10 @@ class NoduleImage:
         
     def _image(self):
         raise NotImplementedError("Subclasses must override")
-        
-    @property
-    def image(self):
-        return self._image()
     
-    # @raw_cache.memoize(typed=True)
-    def image_array(self, segmented: Optional[bool] = False) -> np.array:
-        image_arr = sitk.GetArrayFromImage(self.image)
-        if not segmented:
-            return image_arr
-        
-        inferrer = LMInferer(tqdm_disable=True)
-        mask = inferrer.apply(image_arr)
-        return image_arr * mask.astype(bool)
-        
-    
-    
-    def nodule_slice(self, box_dim: Coord3D = (60,60,60), segmented: Optional[bool] = False) -> np.array:
-        index = self.image.TransformPhysicalPointToIndex(self.center_lps)
-        size_x, size_y, size_z = box_dim
+    def _get_3d_slice(self, center: Coord3D, dims: Coord3D) -> Tuple[slice, slice, slice]:
+        index = self.image.TransformPhysicalPointToIndex(center)
+        size_x, size_y, size_z = dims
         
         start_x = int(max(0, index[0] - size_x // 2))
         end_x = int(min(self.image.GetWidth(), index[0] + size_x // 2))
@@ -84,19 +68,44 @@ class NoduleImage:
         start_y = int(max(0, index[1] - size_y // 2))
         end_y = int(min(self.image.GetHeight(), index[1] + size_y // 2))
 
-        start_z = int(max(0, index[2] - size_z // 2))
-        end_z = int(min(self.image.GetDepth(), index[2] + size_z // 2))
-
-        image_array = self.image_array(segmented=segmented)
+        start_z = int(max(0, abs(index[2]) - size_z // 2))
+        end_z = int(min(self.image.GetDepth(), abs(index[2]) + size_z // 2))
         
-        return image_array[slice(start_z, end_z), slice(start_y, end_y), slice(start_x, end_x)] 
+        return slice(start_z, end_z), slice(start_y, end_y), slice(start_x, end_x)
+        
     
+    def lung_segmentation(self) -> np.array:
+         inferrer = LMInferer(tqdm_disable=True)
+         mask = inferrer.apply(self.image_array())
+         mask[mask.nonzero()] = 1
+         return mask
+        
+        
+    def image_array(self) -> np.array:
+        image_arr = sitk.GetArrayFromImage(self.image)
+        return image_arr
+        
+    
+    
+    def nodule_slice(self, box_dim: Coord3D = (60,60,60)) -> Tuple[np.array, Tuple[slice,slice,slice]]:
+        logger.info(f"Slicing nodule for {self.image_file_path}")
+        slice_3d = self._get_3d_slice(self.center_lps, box_dim)
+
+        image_array = self.image_array()
+        
+        sliced_arr = image_array[slice_3d] 
+        # logger.info(f"Slice shape {sliced_arr.shape} for nodule {self.image_file_path}")
+        pad_width = [(0, max(0, box_dim[2-i] - sliced_arr.shape[i])) for i in range(3)]
+        padded_arr = np.pad(sliced_arr, pad_width=pad_width, mode='constant', constant_values=0)
+        # logger.info(f"Padded shape {padded_arr.shape} for nodule {self.image_file_path}")
+        return padded_arr, slice_3d
+        # return sliced_arr
 
 class NRRDNodule(NoduleImage):
     """Class for loading nodules from NRRD"""
     
-    @functools.lru_cache(maxsize=1)
-    def _image(self) -> sitk.Image:
+    @property
+    def image(self) -> sitk.Image:
         reader = sitk.ImageFileReader()
         reader.SetImageIO("NrrdImageIO")
         reader.SetFileName(self.image_file_path)
@@ -107,8 +116,8 @@ class NRRDNodule(NoduleImage):
 class DICOMNodule(NoduleImage):
     """Class for loading an image of a nodule from DICOM"""
     
-    @functools.lru_cache(maxsize=1)
-    def _image(self) -> sitk.Image:
+    @property
+    def image(self) -> sitk.Image:
         reader = sitk.ImageSeriesReader()
         dicom_files = reader.GetGDCMSeriesFileNames(self.image_file_path)
         reader.SetFileNames(dicom_files)
@@ -166,7 +175,9 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
         coord_file = "/home/kaplinsp/annots_michelle_label.csv"
         nodule_infos = []
         
-        exclude = list(open("/home/kaplinsp/ct_lung_class/ct_lung_class/exclude_michelle.csv"))
+        with open("/home/kaplinsp/ct_lung_class/ct_lung_class/exclude_michelle.csv", "r") as excludefile:
+            exclude = [line.strip() for line in excludefile]
+        
         with open(coord_file) as f:
             reader = csv.reader(f, delimiter=",", quoting=csv.QUOTE_MINIMAL)
             next(reader)

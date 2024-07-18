@@ -47,11 +47,12 @@ class NoduleTrainingApp:
 
         self.use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda" if self.use_cuda else "cpu")
+        self.logger = logging.getLogger(__name__)
 
     def init_model(self) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
-            dropout_prob=0.5, spatial_dims=3, in_channels=1, out_channels=2
+            dropout_prob=0.5, spatial_dims=3, in_channels=2, out_channels=2
         )
         # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
 
@@ -80,7 +81,7 @@ class NoduleTrainingApp:
 
     def init_optimizer(self) -> torch.optim.Optimizer:
         # return SGD(self.model.parameters(),lr=lr, weight_decay=1e-4)
-        return SGD(self.model.parameters(), lr=0.001, momentum=0.99)
+        return SGD(self.model.parameters(), lr=0.001, momentum=0.99, weight_decay=1e-4)
 
     def init_train_dataloader(self) -> DataLoader:
         train_ds = NoduleDataset(
@@ -95,6 +96,7 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
+            drop_last=True,
         )
 
         return train_dl
@@ -110,6 +112,7 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
+            drop_last=True,
         )
 
         return val_dl
@@ -124,17 +127,17 @@ class NoduleTrainingApp:
 
         log_file = os.path.join(LOG_DIR, self.run_dir)
         file_handler = logging.FileHandler(log_file)
-        logger.addHandler(file_handler)
+        self.logger.addHandler(file_handler)
 
     def main(self, *args):
-        logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
+        self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
 
         self.model = self.init_model()
         self.optimizer = self.init_optimizer()
 
-        optim_name = str(self.optimizer).replace("\n", "")
-        self.run_dir = f"log_{self.model._get_name()}_{optim_name}_{self.time_str}.log"
+        self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
         self.init_logs_outputs()
+
 
         best_f1 = -1
         best_accuracy = -1
@@ -148,7 +151,7 @@ class NoduleTrainingApp:
 
         for epoch_ndx in range(1, self.cli_args.epochs + 1):
 
-            logger.info(
+            self.logger.info(
                 f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
             )
 
@@ -327,7 +330,7 @@ class NoduleTrainingApp:
 
         metrics_dict["pr/f1_score"] = 2 * (precision * recall) / (precision + recall)
 
-        logger.info(
+        self.logger.info(
             (
                 "E{} {:8} {loss/all:.8f} loss, "
                 + "{correct/all:-5.1f}% correct, "
@@ -340,7 +343,7 @@ class NoduleTrainingApp:
                 **metrics_dict,
             )
         )
-        logger.info(
+        self.logger.info(
             (
                 "E{} {:8} {loss/neg:.8f} loss, "
                 + "{correct/neg:-5.1f}% correct ({neg_correct:} of {neg_count:})"
@@ -352,7 +355,7 @@ class NoduleTrainingApp:
                 **metrics_dict,
             )
         )
-        logger.info(
+        self.logger.info(
             (
                 "E{} {:8} {loss/pos:.8f} loss, "
                 + "{correct/pos:-5.1f}% correct ({pos_correct:} of {pos_count:})"
