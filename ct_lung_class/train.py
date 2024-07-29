@@ -18,6 +18,7 @@ from torch.optim import SGD
 from torch.utils.data import DataLoader
 from util.logconf import logging
 from util.util import enumerateWithEstimate
+from sklearn.model_selection import KFold
 
 LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
 OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
@@ -48,6 +49,7 @@ class NoduleTrainingApp:
         self.use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda" if self.use_cuda else "cpu")
         self.logger = logging.getLogger(__name__)
+        self.folds = self.generate_kfold()
 
     def init_model(self) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
@@ -445,6 +447,13 @@ if __name__ == "__main__":
         help="Number of blocks (counted from head) to include in finetuning",
         type=int,
         default=1,
+    )
+    parser.add_argument(
+        "--k-folds",
+        help="Number of cross-validation folds.",
+        type=int,
+        default=1,
+        required=False
     )
     cli_args = parser.parse_args()
     NoduleTrainingApp(cli_args).main()

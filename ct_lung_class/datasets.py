@@ -17,7 +17,7 @@ from torch.utils.data import Dataset
 # from transforms import RandomCrop
 from datatsets_peter import (
     Coord3D, NoduleInfoGenerator, PrasadSampleGeneratoryStrategy, 
-    R17SampleGeneratorStrategy, NoduleImage, NoduleInfoTuple
+    R17SampleGeneratorStrategy, NoduleImage, NoduleInfoTuple, Slice3D, Image
 )
 from util.disk import getCache
 from util.logconf import logging
@@ -46,18 +46,17 @@ def getNoduleInfoList() -> List[NoduleInfoTuple]:
     # generator.add_strategies(R17SampleGeneratorStrategy)
     return generator.generate_all_samples()
 
-
-
+    
 @image_cache.memoize(typed=True)
 def getCtRawNodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
     width_irc: Coord3D,
-) -> Tuple[np.array, Tuple[slice,slice,slice]]:
-    ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    return ct.nodule_slice(box_dim=width_irc)
-
+    preprocess: bool = True
+) -> Tuple[Image, Slice3D]:
+    ct = image_type(nodule_file_path, center_lps)
+    return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
 
 @seg_cache.memoize(typed=True)
 def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
@@ -65,27 +64,25 @@ def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps:
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
     return ct.lung_segmentation()
 
-def slice_and_pad_segmentation(nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Tuple[slice,slice,slice]):
+def slice_and_pad_segmentation(nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Slice3D):
     segmentation = get_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
     sliced_seg = segmentation[slice_3d]
     pad_width = [(0, max(0, box_dim[2-i] - sliced_seg.shape[i])) for i in range(3)]
     padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode='constant', constant_values=0)
     return padded_arr
-    
-def preprocess(image: np.array) -> np.array:
-    pass
 
 def getCtAugmentedNodule(
     augmentation_dict: dict,
     noduleInfoTup: NoduleInfoTuple,
     width_irc: IrcTuple,
     use_cache: bool = True,
-) -> np.array:
+    preprocess: bool = True,
+) -> Tuple[Image, Slice3D]:
     if use_cache:
-        ct_chunk, slice_3d = getCtRawNodule(noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, width_irc)
+        ct_chunk, slice_3d = getCtRawNodule(noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, width_irc, preprocess=preprocess)
     else:
         ct: NoduleImage = noduleInfoTup.image_type(noduleInfoTup.file_path, noduleInfoTup.center_lps)
-        ct_chunk, slice_3d = ct.nodule_slice(box_dim=width_irc)
+        ct_chunk, slice_3d = ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
 
     
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
@@ -224,6 +221,7 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup,
                 width_irc,
                 self.use_cache,
+                preprocess=False
             )
         elif self.use_cache:
             nodule_a, slice_3d = getCtRawNodule(
@@ -231,12 +229,13 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
                 width_irc,
+                preprocess=False
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
         else:
             ct: NoduleImage = noduleInfo_tup.image_type(noduleInfo_tup.file_path, noduleInfo_tup.center_lps)
-            nodule_a, slice_3d = ct.nodule_slice(box_dim=width_irc)
+            nodule_a, slice_3d = ct.nodule_slice(box_dim=width_irc, preprocess=False)
 
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)

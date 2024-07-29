@@ -3,10 +3,11 @@ import csv
 from dataclasses import dataclass
 import functools
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 import SimpleITK as sitk
 import numpy as np
 from lungmask import LMInferer
+import torchio as tio
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ def get_coord_csv(c1, c2, c3):
 
 Point = Union[int, float]
 Coord3D = Union[Tuple[Point, Point, Point], np.array]
+Slice3D = Tuple[slice, slice, slice]
+Image = np.typing.NDArray
+
+CT_AIR, CT_BONE = -1000, 1000
 
 def ras_to_lps(tup: np.array) -> np.array:
     tup[0] *= -1
@@ -58,7 +63,7 @@ class NoduleImage:
     def _image(self):
         raise NotImplementedError("Subclasses must override")
     
-    def _get_3d_slice(self, center: Coord3D, dims: Coord3D) -> Tuple[slice, slice, slice]:
+    def _get_3d_slice(self, center: Coord3D, dims: Coord3D) -> Slice3D:
         index = self.image.TransformPhysicalPointToIndex(center)
         size_x, size_y, size_z = dims
         
@@ -74,24 +79,29 @@ class NoduleImage:
         return slice(start_z, end_z), slice(start_y, end_y), slice(start_x, end_x)
         
     
-    def lung_segmentation(self) -> np.array:
+    def lung_segmentation(self) -> Image:
          inferrer = LMInferer(tqdm_disable=True)
          mask = inferrer.apply(self.image_array())
          mask[mask.nonzero()] = 1
          return mask
         
         
-    def image_array(self) -> np.array:
+    def image_array(self, preprocess=True) -> Image:
         image_arr = sitk.GetArrayFromImage(self.image)
-        return image_arr
         
+        if preprocess:
+            transforms = tio.Compose([
+                tio.RescaleIntensity(out_min_max=(-1, 1), percentiles=(0.5, 99.5), in_min_max=(CT_AIR, CT_BONE))
+            ])
+            image_arr = transforms(np.expand_dims(image_arr, 0))[0]
+        
+        return image_arr
     
     
-    def nodule_slice(self, box_dim: Coord3D = (60,60,60)) -> Tuple[np.array, Tuple[slice,slice,slice]]:
-        logger.info(f"Slicing nodule for {self.image_file_path}")
+    def nodule_slice(self, box_dim: Coord3D = (60,60,60), preprocess=True) -> Tuple[Image, Slice3D]:
         slice_3d = self._get_3d_slice(self.center_lps, box_dim)
 
-        image_array = self.image_array()
+        image_array = self.image_array(preprocess=preprocess)
         
         sliced_arr = image_array[slice_3d] 
         # logger.info(f"Slice shape {sliced_arr.shape} for nodule {self.image_file_path}")
