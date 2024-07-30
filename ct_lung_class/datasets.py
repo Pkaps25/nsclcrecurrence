@@ -13,6 +13,8 @@ import torch
 import torch.cuda
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+import numpy as np
+import numpy.typing
 
 # from transforms import RandomCrop
 from datatsets_peter import (
@@ -31,6 +33,7 @@ log.setLevel(logging.DEBUG)
 
 image_cache = getCache("image_slices")
 seg_cache = getCache("segmentations")
+nodule_seg_cache = getCache("nodules")
 
 # NoduleInfoTuple = namedtuple(
 #     "NoduleInfoTuple",
@@ -42,8 +45,8 @@ DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 def getNoduleInfoList() -> List[NoduleInfoTuple]:
     generator = NoduleInfoGenerator()
-    generator.add_strategies(PrasadSampleGeneratoryStrategy, R17SampleGeneratorStrategy)
-    # generator.add_strategies(R17SampleGeneratorStrategy)
+    # generator.add_strategies(PrasadSampleGeneratoryStrategy, R17SampleGeneratorStrategy)
+    generator.add_strategies(R17SampleGeneratorStrategy)
     return generator.generate_all_samples()
 
     
@@ -60,12 +63,21 @@ def getCtRawNodule(
 
 @seg_cache.memoize(typed=True)
 def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
-    log.info(f"Segmenting nodule for {nodule_file_path}")
+    log.info(f"Segmenting lung for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
     return ct.lung_segmentation()
 
-def slice_and_pad_segmentation(nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Slice3D):
-    segmentation = get_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
+@nodule_seg_cache.memoize(typed=True)
+def get_nodule_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
+    log.info(f"Segmenting nodule for {nodule_file_path}")
+    ct: NoduleImage = image_type(nodule_file_path, center_lps)
+    return ct.nodule_segmentation()
+
+def slice_and_pad_segmentation(seg_type: str, nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Slice3D):
+    if seg_type == "lung":
+        segmentation = get_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
+    elif seg_type == "nodule":
+        segmentation = get_nodule_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
     sliced_seg = segmentation[slice_3d]
     pad_width = [(0, max(0, box_dim[2-i] - sliced_seg.shape[i])) for i in range(3)]
     padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode='constant', constant_values=0)
@@ -144,36 +156,21 @@ def getCtAugmentedNodule(
 class NoduleDataset(Dataset):
     def __init__(
         self,
-        val_stride=0,
+        nodule_info_list,
         isValSet_bool=None,
-        nod_id=None,
-        ratio_int=0,
         sortby_str="random",
         augmentation_dict=None,
         use_cache=True,
         segmented=True,
     ):
-        self.ratio_int = ratio_int
         self.augmentation_dict = augmentation_dict
         self.use_cache = use_cache
-        self.noduleInfo_list = copy.copy(getNoduleInfoList())
+        self.noduleInfo_list = copy.copy(nodule_info_list)
         self.segmented = segmented
-
-        if nod_id:
-            self.noduleInfo_list = [x for x in self.noduleInfo_list if x.nod_id == nod_id]
-
-        if isValSet_bool:
-            assert val_stride > 0, val_stride
-            self.noduleInfo_list = self.noduleInfo_list[::val_stride]
-            assert self.noduleInfo_list
-        elif val_stride > 0:
-            del self.noduleInfo_list[::val_stride]
-            assert self.noduleInfo_list
 
         if sortby_str == "random":
             random.shuffle(self.noduleInfo_list)
         elif sortby_str == "nod_id":
-            # self.candidateInfo_list.sort(key=lambda x: (x.series_uid, x.center_xyz))
             self.noduleInfo_list.sort(key=lambda x: x.file_path)
         else:
             raise Exception("Unknown sort: " + repr(sortby_str))
@@ -191,27 +188,18 @@ class NoduleDataset(Dataset):
         )
 
     def shuffleSamples(self):
-        if self.ratio_int:
-            random.shuffle(self.negative_list)
-            random.shuffle(self.pos_list)
+        # TODO
+        pass
+        # if False:
+        #     random.shuffle(self.negative_list)
+        #     random.shuffle(self.pos_list)
 
     def __len__(self):
         return len(self.noduleInfo_list)
     
 
     def __getitem__(self, ndx) -> DatasetItem:
-        noduleInfo_tup: NoduleInfoTuple = None
-        if self.ratio_int:
-            pos_ndx = ndx // (self.ratio_int + 1)
-            if ndx % (self.ratio_int + 1):
-                neg_ndx = ndx - 1 - pos_ndx
-                neg_ndx %= len(self.negative_list)
-                noduleInfo_tup = self.noduleInfo_list[neg_ndx]
-            else:
-                pos_ndx %= len(self.pos_list)
-                noduleInfo_tup = self.pos_list[pos_ndx]
-        else:
-            noduleInfo_tup = self.noduleInfo_list[ndx]
+        noduleInfo_tup = self.noduleInfo_list[ndx]
 
         width_irc = (40, 40, 30)
 
@@ -244,8 +232,10 @@ class NoduleDataset(Dataset):
             [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
             dtype=torch.long,
         )
-        segmentation = slice_and_pad_segmentation(noduleInfo_tup, width_irc, slice_3d)
-        segmentation_t = torch.from_numpy(segmentation).unsqueeze(0)
-        nodule_t_segmented = torch.cat([nodule_t, segmentation_t], dim=0)
+        lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
+        nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d)
+        lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
+        nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
+        nodule_t_segmented = torch.cat([nodule_t, lung_segmentation_t, nod_segmentation_t], dim=0)
 
         return nodule_t_segmented, pos_t, noduleInfo_tup.nod_id 

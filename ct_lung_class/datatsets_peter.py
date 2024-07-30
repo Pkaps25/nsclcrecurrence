@@ -3,11 +3,13 @@ import csv
 from dataclasses import dataclass
 import functools
 import logging
+import os
 from typing import Any, List, Optional, Tuple, Union
 import SimpleITK as sitk
 import numpy as np
 from lungmask import LMInferer
 import torchio as tio
+import numpy.typing
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,6 @@ def ras_to_lps(tup: np.array) -> np.array:
 
 class NoduleImage:
     def __init__(self, image_file_path: str, center_lps: np.array):
-        # self.nod_id = nod_id
         self.image_file_path = image_file_path
         self.center_lps = center_lps
         
@@ -85,7 +86,11 @@ class NoduleImage:
          mask[mask.nonzero()] = 1
          return mask
         
-        
+    def nodule_segmentation(self) -> Image:
+        nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
+        seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
+        return sitk.GetArrayFromImage(sitk.ReadImage(seg_file))
+    
     def image_array(self, preprocess=True) -> Image:
         image_arr = sitk.GetArrayFromImage(self.image)
         

@@ -1,6 +1,7 @@
 import argparse
 import os
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import torch
@@ -12,13 +13,15 @@ from constants import (
     METRICS_PRED_NDX,
     METRICS_SIZE,
 )
-from datasets import DatasetItem, NoduleDataset
+from datasets import DatasetItem, NoduleDataset, getNoduleInfoList
 from model import NoduleRecurrenceClassifier
 from torch.optim import SGD
 from torch.utils.data import DataLoader
 from util.logconf import logging
 from util.util import enumerateWithEstimate
 from sklearn.model_selection import KFold
+from torch.utils.tensorboard import SummaryWriter
+
 
 LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
 OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
@@ -49,12 +52,21 @@ class NoduleTrainingApp:
         self.use_cuda = torch.cuda.is_available()
         self.device = torch.device("cuda" if self.use_cuda else "cpu")
         self.logger = logging.getLogger(__name__)
-        self.folds = self.generate_kfold()
-
+        self.cross_validate = True if self.cli_args.k_folds > 1 else False
+        self.nodule_info_list = getNoduleInfoList()
+        if self.cross_validate:
+            self.k_fold_splits = self.generate_k_folds(self.cli_args.k_folds)
+        
+    def generate_k_folds(self, n_splits: int):
+        nodules = [[nod] for nod in self.nodule_info_list]
+        kfold = KFold(n_splits=n_splits, shuffle=True)
+        return kfold.split(nodules)
+            
+        
     def init_model(self) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
-            dropout_prob=0.5, spatial_dims=3, in_channels=2, out_channels=2
+           dropout_prob=0.4, spatial_dims=3, in_channels=3, out_channels=2
         )
         # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
 
@@ -85,11 +97,15 @@ class NoduleTrainingApp:
         # return SGD(self.model.parameters(),lr=lr, weight_decay=1e-4)
         return SGD(self.model.parameters(), lr=0.001, momentum=0.99, weight_decay=1e-4)
 
-    def init_train_dataloader(self) -> DataLoader:
+    def init_train_dataloader(self, train_idx=None) -> DataLoader:
+        if train_idx is not None:
+            nodule_infos = [self.nodule_info_list[i] for i in train_idx]
+        else:
+            nodule_infos = [element for i, element in enumerate(self.nodule_info_list, 1) if i % 4 != 0]
+
         train_ds = NoduleDataset(
-            val_stride=4,
+            nodule_info_list=nodule_infos,
             isValSet_bool=False,
-            ratio_int=0,
             augmentation_dict=self.augmentation_dict,
         )
 
@@ -103,9 +119,15 @@ class NoduleTrainingApp:
 
         return train_dl
 
-    def init_val_dataloader(self) -> DataLoader:
+    def init_val_dataloader(self, val_stride: int = 4, val_idx: Optional[list] = None) -> DataLoader:
+        
+        if val_idx is not None:
+            nodule_infos = [self.nodule_info_list[i] for i in val_idx]
+        else:
+            nodule_infos = self.nodule_info_list[::val_stride]
+        
         val_ds = NoduleDataset(
-            val_stride=4,
+            nodule_info_list=nodule_infos,
             isValSet_bool=True,
         )
 
@@ -138,69 +160,80 @@ class NoduleTrainingApp:
         self.optimizer = self.init_optimizer()
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
+        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}")
         self.init_logs_outputs()
 
+        if not self.cross_validate:
+            train_dl = self.init_train_dataloader()
+            val_dl = self.init_val_dataloader()
+            self.train(train_dl, val_dl)
+            return 
+        
+        for split_idx, (train_idx, val_idx) in enumerate(self.k_fold_splits):
+            self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log/split_{split_idx}"
+            if not os.path.exists(os.path.join(OUTPUT_PATH, self.run_dir)):
+                os.mkdir(os.path.join(OUTPUT_PATH, self.run_dir))
+            
+            self.logger.info(f"Starting cross validation split {split_idx}")
+            self.model = self.init_model()
+            self.optimizer = self.init_optimizer()
+            
+            train_dl = self.init_train_dataloader(train_idx=train_idx)
+            val_dl = self.init_val_dataloader(val_idx=val_idx)
+            self.train(train_dl, val_dl)
 
+    def train(self, train_dl, val_dl):
         best_f1 = -1
         best_accuracy = -1
         best_loss = float("inf")
-
-        train_metrics = []
-        val_metrics = []
-
-        train_dl = self.init_train_dataloader()
-        val_dl = self.init_val_dataloader()
-
         for epoch_ndx in range(1, self.cli_args.epochs + 1):
 
             self.logger.info(
                 f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
             )
 
-            trnMetrics_t = self.train(epoch_ndx, train_dl)
-            it_train_metric = self.log_metrics(epoch_ndx, "train", trnMetrics_t)
-            train_metrics.append(list(it_train_metric))
+            trnMetrics_t = self.train_epoch(epoch_ndx, train_dl)
+            self.log_metrics(epoch_ndx, "train", trnMetrics_t)
 
             valMetrics_t = self.validate(epoch_ndx, val_dl)
             it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
-            val_f1, val_accuracy, val_loss = it_val_metric
-            val_metrics.append(list(it_val_metric))
 
-            if val_f1 > best_f1:  # best val F1
-                best_f1 = val_f1
-                torch.save(
-                    {
-                        "epoch": epoch_ndx,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                    },
-                    os.path.join(OUTPUT_PATH, self.run_dir, "best_f1_model.pth"),
-                )
-            if val_accuracy > best_accuracy:  # best val accuracy
-                best_accuracy = val_accuracy
-                torch.save(
-                    {
-                        "epoch": epoch_ndx,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                    },
-                    os.path.join(OUTPUT_PATH, self.run_dir, "best_accuracy_model.pth"),
-                )
-            if val_loss < best_loss:  # best val loss
-                best_loss = val_loss
-                torch.save(
-                    {
-                        "epoch": epoch_ndx,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                    },
-                    os.path.join(OUTPUT_PATH, self.run_dir, "best_loss_model.pth"),
-                )
-
-        torch.save(train_metrics, "train_metrics.pth")
-        torch.save(val_metrics, "val_metrics.pth")
-
-    def train(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
+            val_f1 = it_val_metric["pr/f1_score"]
+            val_accuracy = it_val_metric["correct/all"]
+            val_loss = it_val_metric["loss/all"]
+            
+            # if val_f1 > best_f1:  # best val F1
+            #     best_f1 = val_f1
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(OUTPUT_PATH, self.run_dir, "best_f1_model.pth"),
+            #     )
+            # if val_accuracy > best_accuracy:  # best val accuracy
+            #     best_accuracy = val_accuracy
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(OUTPUT_PATH, self.run_dir, "best_accuracy_model.pth"),
+            #     )
+            # if val_loss < best_loss:  # best val loss
+            #     best_loss = val_loss
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(OUTPUT_PATH, self.run_dir, "best_loss_model.pth"),
+            #     )
+                
+    def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
         self.model.train()
         train_dl.dataset.shuffleSamples()
         train_metrics = torch.zeros(
@@ -295,7 +328,7 @@ class NoduleTrainingApp:
         mode_str: str,
         metrics: torch.Tensor,
         classification_threshold=0.5,
-    ) -> None:
+    ) -> dict:
 
         negative_label_mask = metrics[METRICS_LABEL_NDX] <= classification_threshold
         negative_predicted_mask = metrics[METRICS_PRED_NDX] <= classification_threshold
@@ -369,8 +402,10 @@ class NoduleTrainingApp:
                 **metrics_dict,
             )
         )
+        for name, value in metrics_dict.items():
+            self.writer.add_scalar(f"{name}/{mode_str}", value, epoch_ndx)
 
-        return metrics_dict["pr/f1_score"], metrics_dict["correct/all"], metrics_dict["loss/all"]
+        return metrics_dict
 
 
 if __name__ == "__main__":
