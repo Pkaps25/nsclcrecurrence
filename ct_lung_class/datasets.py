@@ -232,10 +232,11 @@ class NoduleDataset(Dataset):
             [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
             dtype=torch.long,
         )
-        lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
+        # lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
         nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d)
-        lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
+        # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
         nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
-        nodule_t_segmented = torch.cat([nodule_t, lung_segmentation_t, nod_segmentation_t], dim=0)
+        # nodule_t_segmented = torch.cat([nodule_t, lung_segmentation_t, nod_segmentation_t], dim=0)
+        nodule_t_segmented = nodule_t * nod_segmentation_t
 
         return nodule_t_segmented, pos_t, noduleInfo_tup.nod_id 

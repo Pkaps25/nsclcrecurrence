@@ -91,7 +91,7 @@ class NoduleImage:
         seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
         return sitk.GetArrayFromImage(sitk.ReadImage(seg_file))
     
-    def image_array(self, preprocess=True) -> Image:
+    def image_array(self, preprocess=False) -> Image:
         image_arr = sitk.GetArrayFromImage(self.image)
         
         if preprocess:

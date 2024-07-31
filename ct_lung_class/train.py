@@ -66,7 +66,7 @@ class NoduleTrainingApp:
     def init_model(self) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
-           dropout_prob=0.4, spatial_dims=3, in_channels=3, out_channels=2
+           dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2
         )
         # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
 
@@ -160,7 +160,7 @@ class NoduleTrainingApp:
         self.optimizer = self.init_optimizer()
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
-        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}")
+        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_segmult")
         self.init_logs_outputs()
 
         if not self.cross_validate:
