@@ -56,7 +56,7 @@ def getCtRawNodule(
     image_type: NoduleImage,
     center_lps: Coord3D,
     width_irc: Coord3D,
-    preprocess: bool = True
+    preprocess: bool = False
 ) -> Tuple[Image, Slice3D]:
     ct = image_type(nodule_file_path, center_lps)
     return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)

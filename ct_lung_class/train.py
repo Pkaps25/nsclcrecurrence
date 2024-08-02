@@ -1,7 +1,9 @@
 import argparse
+import itertools
 import os
 from datetime import datetime
-from typing import Optional
+import random
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -13,13 +15,14 @@ from constants import (
     METRICS_PRED_NDX,
     METRICS_SIZE,
 )
+from datatsets_peter import NoduleInfoTuple
 from datasets import DatasetItem, NoduleDataset, getNoduleInfoList
 from model import NoduleRecurrenceClassifier
 from torch.optim import SGD
 from torch.utils.data import DataLoader
 from util.logconf import logging
 from util.util import enumerateWithEstimate
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -54,6 +57,7 @@ class NoduleTrainingApp:
         self.logger = logging.getLogger(__name__)
         self.cross_validate = True if self.cli_args.k_folds > 1 else False
         self.nodule_info_list = getNoduleInfoList()
+        random.shuffle(self.nodule_info_list)
         if self.cross_validate:
             self.k_fold_splits = self.generate_k_folds(self.cli_args.k_folds)
         
@@ -61,6 +65,11 @@ class NoduleTrainingApp:
         nodules = [[nod] for nod in self.nodule_info_list]
         kfold = KFold(n_splits=n_splits, shuffle=True)
         return kfold.split(nodules)
+    
+    def _train_test_split(self, nodules: List[NoduleInfoTuple], val_ratio: Optional[float] = 0.25) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
+        nods = [[nod] for nod in nodules]
+        x_train, x_test = train_test_split(nods, test_size=0.25)
+        return list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
             
         
     def init_model(self) -> torch.nn.Module:
@@ -97,14 +106,9 @@ class NoduleTrainingApp:
         # return SGD(self.model.parameters(),lr=lr, weight_decay=1e-4)
         return SGD(self.model.parameters(), lr=0.001, momentum=0.99, weight_decay=1e-4)
 
-    def init_train_dataloader(self, train_idx=None) -> DataLoader:
-        if train_idx is not None:
-            nodule_infos = [self.nodule_info_list[i] for i in train_idx]
-        else:
-            nodule_infos = [element for i, element in enumerate(self.nodule_info_list, 1) if i % 4 != 0]
-
+    def init_train_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
         train_ds = NoduleDataset(
-            nodule_info_list=nodule_infos,
+            nodule_info_list=nodule_list,
             isValSet_bool=False,
             augmentation_dict=self.augmentation_dict,
         )
@@ -119,15 +123,10 @@ class NoduleTrainingApp:
 
         return train_dl
 
-    def init_val_dataloader(self, val_stride: int = 4, val_idx: Optional[list] = None) -> DataLoader:
-        
-        if val_idx is not None:
-            nodule_infos = [self.nodule_info_list[i] for i in val_idx]
-        else:
-            nodule_infos = self.nodule_info_list[::val_stride]
+    def init_val_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
         
         val_ds = NoduleDataset(
-            nodule_info_list=nodule_infos,
+            nodule_info_list=nodule_list,
             isValSet_bool=True,
         )
 
@@ -152,6 +151,11 @@ class NoduleTrainingApp:
         log_file = os.path.join(LOG_DIR, self.run_dir)
         file_handler = logging.FileHandler(log_file)
         self.logger.addHandler(file_handler)
+        
+    def assert_no_leak(self, train_dl, val_dl):
+        trains = set(f"{nod.file_path}{nod.center_lps}" for nod in train_dl.dataset.noduleInfo_list)
+        vals = set(f"{nod.file_path}{nod.center_lps}" for nod in val_dl.dataset.noduleInfo_list)
+        assert len(vals.intersection(trains)) == 0, "Data leak, overlapping train and val samples"
 
     def main(self, *args):
         self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
@@ -160,27 +164,30 @@ class NoduleTrainingApp:
         self.optimizer = self.init_optimizer()
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
-        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_segmult")
+        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_400pt")
         self.init_logs_outputs()
 
+        train_set, test_set = self._train_test_split(self.nodule_info_list)
         if not self.cross_validate:
-            train_dl = self.init_train_dataloader()
-            val_dl = self.init_val_dataloader()
+            train_dl = self.init_train_dataloader(train_set)
+            val_dl = self.init_val_dataloader(test_set)
+            self.assert_no_leak(train_dl, val_dl)
             self.train(train_dl, val_dl)
             return 
         
-        for split_idx, (train_idx, val_idx) in enumerate(self.k_fold_splits):
-            self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log/split_{split_idx}"
-            if not os.path.exists(os.path.join(OUTPUT_PATH, self.run_dir)):
-                os.mkdir(os.path.join(OUTPUT_PATH, self.run_dir))
+        # """ K FOLD VALIDATION"""
+        # for split_idx, (train_idx, val_idx) in enumerate(self.k_fold_splits):
+        #     self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log/split_{split_idx}"
+        #     if not os.path.exists(os.path.join(OUTPUT_PATH, self.run_dir)):
+        #         os.mkdir(os.path.join(OUTPUT_PATH, self.run_dir))
             
-            self.logger.info(f"Starting cross validation split {split_idx}")
-            self.model = self.init_model()
-            self.optimizer = self.init_optimizer()
+        #     self.logger.info(f"Starting cross validation split {split_idx}")
+        #     self.model = self.init_model()
+        #     self.optimizer = self.init_optimizer()
             
-            train_dl = self.init_train_dataloader(train_idx=train_idx)
-            val_dl = self.init_val_dataloader(val_idx=val_idx)
-            self.train(train_dl, val_dl)
+        #     train_dl = self.init_train_dataloader(train_idx=train_idx)
+        #     val_dl = self.init_val_dataloader(val_idx=val_idx)
+        #     self.train(train_dl, val_dl)
 
     def train(self, train_dl, val_dl):
         best_f1 = -1
