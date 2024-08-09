@@ -87,7 +87,7 @@ class NoduleImage:
          mask[mask.nonzero()] = 1
          return mask
         
-    def nodule_segmentation(self) -> Image:
+    def nodule_segmentation(self) -> sitk.Image:
         raise NotImplemented("Must override this method!")
     
     def image_array(self, preprocess=False) -> Image:
@@ -125,10 +125,10 @@ class NRRDNodule(NoduleImage):
         reader.SetFileName(self.image_file_path)
         return reader.Execute()
     
-    def nodule_segmentation(self) -> Image:
+    def nodule_segmentation(self) -> sitk.Image:
         nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
         seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
-        return sitk.GetArrayFromImage(sitk.ReadImage(seg_file))
+        return sitk.ReadImage(seg_file)
     
 
 
@@ -143,10 +143,10 @@ class DICOMNodule(NoduleImage):
         image = reader.Execute()
         return image
     
-    def nodule_segmentation(self) -> Image:
+    def nodule_segmentation(self) -> sitk.Image:
         nod_id = os.path.basename(self.image_file_path).split("_")[-1]
         seg_file = f"/data/kaplinsp/test_nnunet/lung_p{nod_id}.nii.gz"
-        return sitk.GetArrayFromImage(sitk.ReadImage(seg_file))
+        return sitk.ReadImage(seg_file)
 
 @dataclass
 class NoduleInfoTuple:
@@ -179,8 +179,7 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
                     continue
 
                 center = get_coord_csv(row[4], row[5], row[6])
-                # label = int(row[7])
-                label = 0 if random.random() < 0.5 else 1
+                label = int(row[7])
                 file_path = f"/data/etay/lung_hist_dat/original_dat_nrrds/nod{nod_name}.nrrd"
                 nodule_infos.append(
                     NoduleInfoTuple(

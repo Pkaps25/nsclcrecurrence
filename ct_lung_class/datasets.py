@@ -2,15 +2,15 @@ import copy
 import functools
 import math
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import sys
+import SimpleITK as sitk
 
 import numpy as np
 
 
 # import torchio as tio
 import torch
-import torch.cuda
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import numpy as np
@@ -34,11 +34,6 @@ log.setLevel(logging.DEBUG)
 image_cache = getCache("image_slices")
 seg_cache = getCache("segmentations")
 nodule_seg_cache = getCache("nodules")
-
-# NoduleInfoTuple = namedtuple(
-#     "NoduleInfoTuple",
-#     ["isNodule_bool", "nod_id", "center_xyz", "file_path"]
-# )
 
 DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
@@ -68,16 +63,22 @@ def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps:
     return ct.lung_segmentation()
 
 @nodule_seg_cache.memoize(typed=True)
-def get_nodule_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
+def get_nodule_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D, dilation: Optional[int] = None) -> Image:
     log.info(f"Segmenting nodule for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    return ct.nodule_segmentation()
+    segmentation = ct.nodule_segmentation()
+    if dilation is not None:
+        signed_distance_map = sitk.SignedMaurerDistanceMap(segmentation, squaredDistance=False, useImageSpacing=True)
+        segmentation = (signed_distance_map < dilation)
+    
+    return sitk.GetArrayFromImage(segmentation)
 
-def slice_and_pad_segmentation(seg_type: str, nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Slice3D):
+
+def slice_and_pad_segmentation(seg_type: str, nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Slice3D, dilation: Optional[int] = None):
     if seg_type == "lung":
         segmentation = get_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
     elif seg_type == "nodule":
-        segmentation = get_nodule_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
+        segmentation = get_nodule_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps, dilation)
     sliced_seg = segmentation[slice_3d]
     pad_width = [(0, max(0, box_dim[2-i] - sliced_seg.shape[i])) for i in range(3)]
     padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode='constant', constant_values=0)
@@ -233,7 +234,7 @@ class NoduleDataset(Dataset):
             dtype=torch.long,
         )
         # lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
-        nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d)
+        nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
         # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
         nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
         # nodule_t_segmented = torch.cat([nodule_t, lung_segmentation_t, nod_segmentation_t], dim=0)

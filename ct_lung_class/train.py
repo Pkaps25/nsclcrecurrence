@@ -52,8 +52,9 @@ class NoduleTrainingApp:
         if self.cli_args.augmented or self.cli_args.augment_noise:
             self.augmentation_dict["noise"] = 25.0
 
+        self.tag = self.cli_args.tag
         self.use_cuda = torch.cuda.is_available()
-        self.device = torch.device("cuda" if self.use_cuda else "cpu")
+        self.device = torch.device("cuda:3" if self.use_cuda else "cpu")
         self.logger = logging.getLogger(__name__)
         self.cross_validate = True if self.cli_args.k_folds > 1 else False
         self.nodule_info_list = getNoduleInfoList()
@@ -66,9 +67,13 @@ class NoduleTrainingApp:
         kfold = KFold(n_splits=n_splits, shuffle=True)
         return kfold.split(nodules)
     
-    def _train_test_split(self, nodules: List[NoduleInfoTuple], val_ratio: Optional[float] = 0.25) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
+    def _train_test_split(
+        self, 
+        nodules: List[NoduleInfoTuple], 
+        test_ratio: Optional[float] = 0.25,
+    ) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
         nods = [[nod] for nod in nodules]
-        x_train, x_test = train_test_split(nods, test_size=0.25)
+        x_train, x_test = train_test_split(nods, test_size=test_ratio)
         return list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
             
         
@@ -98,7 +103,7 @@ class NoduleTrainingApp:
                     p.requires_grad_(False)
 
         if self.use_cuda:
-            model = model.to("cuda")
+            model = model.to(self.device)
 
         return model
 
@@ -164,7 +169,7 @@ class NoduleTrainingApp:
         self.optimizer = self.init_optimizer()
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
-        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_400pt")
+        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_{self.tag}")
         self.init_logs_outputs()
 
         train_set, test_set = self._train_test_split(self.nodule_info_list)
@@ -496,6 +501,11 @@ if __name__ == "__main__":
         type=int,
         default=1,
         required=False
+    )
+    parser.add_argument(
+        "--tag",
+        required=True,
+        help="Tag string for logging"
     )
     cli_args = parser.parse_args()
     NoduleTrainingApp(cli_args).main()
