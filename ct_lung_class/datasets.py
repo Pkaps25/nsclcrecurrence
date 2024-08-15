@@ -51,8 +51,9 @@ def getCtRawNodule(
     image_type: NoduleImage,
     center_lps: Coord3D,
     width_irc: Coord3D,
-    preprocess: bool = False
+    preprocess: bool,
 ) -> Tuple[Image, Slice3D]:
+    log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct = image_type(nodule_file_path, center_lps)
     return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
 
@@ -88,16 +89,9 @@ def getCtAugmentedNodule(
     augmentation_dict: dict,
     noduleInfoTup: NoduleInfoTuple,
     width_irc: IrcTuple,
-    use_cache: bool = True,
-    preprocess: bool = True,
+    preprocess: bool,
 ) -> Tuple[Image, Slice3D]:
-    if use_cache:
-        ct_chunk, slice_3d = getCtRawNodule(noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, width_irc, preprocess=preprocess)
-    else:
-        ct: NoduleImage = noduleInfoTup.image_type(noduleInfoTup.file_path, noduleInfoTup.center_lps)
-        ct_chunk, slice_3d = ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
-
-    
+    ct_chunk, slice_3d = getCtRawNodule(noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, width_irc, preprocess=preprocess)
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
     transform_t = torch.eye(4)
 
@@ -161,13 +155,9 @@ class NoduleDataset(Dataset):
         isValSet_bool=None,
         sortby_str="random",
         augmentation_dict=None,
-        use_cache=True,
-        segmented=True,
     ):
         self.augmentation_dict = augmentation_dict
-        self.use_cache = use_cache
         self.noduleInfo_list = copy.copy(nodule_info_list)
-        self.segmented = segmented
 
         if sortby_str == "random":
             random.shuffle(self.noduleInfo_list)
@@ -187,13 +177,9 @@ class NoduleDataset(Dataset):
                 "validation" if isValSet_bool else "training",
             )
         )
-
+        
     def shuffleSamples(self):
-        # TODO
         pass
-        # if False:
-        #     random.shuffle(self.negative_list)
-        #     random.shuffle(self.pos_list)
 
     def __len__(self):
         return len(self.noduleInfo_list)
@@ -202,17 +188,16 @@ class NoduleDataset(Dataset):
     def __getitem__(self, ndx) -> DatasetItem:
         noduleInfo_tup = self.noduleInfo_list[ndx]
 
-        width_irc = (40, 40, 30)
+        width_irc = (50, 50, 50)
 
         if self.augmentation_dict:
             nodule_t, slice_3d = getCtAugmentedNodule(
                 self.augmentation_dict,
                 noduleInfo_tup,
                 width_irc,
-                self.use_cache,
                 preprocess=False
             )
-        elif self.use_cache:
+        else:
             nodule_a, slice_3d = getCtRawNodule(
                 noduleInfo_tup.file_path,
                 noduleInfo_tup.image_type,
@@ -220,12 +205,6 @@ class NoduleDataset(Dataset):
                 width_irc,
                 preprocess=False
             )
-            nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
-            nodule_t = nodule_t.unsqueeze(0)
-        else:
-            ct: NoduleImage = noduleInfo_tup.image_type(noduleInfo_tup.file_path, noduleInfo_tup.center_lps)
-            nodule_a, slice_3d = ct.nodule_slice(box_dim=width_irc, preprocess=False)
-
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
 
@@ -237,7 +216,7 @@ class NoduleDataset(Dataset):
         nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
         # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
         nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
-        # nodule_t_segmented = torch.cat([nodule_t, lung_segmentation_t, nod_segmentation_t], dim=0)
+        # nodule_t_segmented = torch.cat([nodule_t, nod_segmentation_t], dim=0)
         nodule_t_segmented = nodule_t * nod_segmentation_t
 
         return nodule_t_segmented, pos_t, noduleInfo_tup.nod_id 

@@ -70,7 +70,7 @@ class NoduleTrainingApp:
     def _train_test_split(
         self, 
         nodules: List[NoduleInfoTuple], 
-        test_ratio: Optional[float] = 0.25,
+        test_ratio: float,
     ) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
         nods = [[nod] for nod in nodules]
         x_train, x_test = train_test_split(nods, test_size=test_ratio)
@@ -124,6 +124,7 @@ class NoduleTrainingApp:
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
             drop_last=True,
+            shuffle=True
         )
 
         return train_dl
@@ -141,6 +142,7 @@ class NoduleTrainingApp:
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
             drop_last=True,
+            shuffle=True
         )
 
         return val_dl
@@ -161,6 +163,7 @@ class NoduleTrainingApp:
         trains = set(f"{nod.file_path}{nod.center_lps}" for nod in train_dl.dataset.noduleInfo_list)
         vals = set(f"{nod.file_path}{nod.center_lps}" for nod in val_dl.dataset.noduleInfo_list)
         assert len(vals.intersection(trains)) == 0, "Data leak, overlapping train and val samples"
+        assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) == len(self.nodule_info_list), "Using all samples in dataset"
 
     def main(self, *args):
         self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
@@ -172,7 +175,7 @@ class NoduleTrainingApp:
         self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_{self.tag}")
         self.init_logs_outputs()
 
-        train_set, test_set = self._train_test_split(self.nodule_info_list)
+        train_set, test_set = self._train_test_split(self.nodule_info_list, self.cli_args.val_ratio)
         if not self.cross_validate:
             train_dl = self.init_train_dataloader(train_set)
             val_dl = self.init_val_dataloader(test_set)
@@ -506,6 +509,12 @@ if __name__ == "__main__":
         "--tag",
         required=True,
         help="Tag string for logging"
+    )
+    parser.add_argument(
+        "--val-ratio",
+        required=False,
+        type=float,
+        default=0.25
     )
     cli_args = parser.parse_args()
     NoduleTrainingApp(cli_args).main()

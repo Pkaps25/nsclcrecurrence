@@ -32,18 +32,6 @@ def get_coord_csv(c1, c2, c3):
     return center
 
 
-# def create_image_cache(scope_str: str):
-#     return FanoutCache(
-#             "/data/kaplinsp/image-cache/" + scope_str,
-#             disk=Disk,
-#             shards=64,
-#             timeout=1,
-#             size_limit=3e11,
-#         )
-    
-# raw_cache = create_image_cache("nod1")
-
-
 Point = Union[int, float]
 Coord3D = Union[Tuple[Point, Point, Point], np.array]
 Slice3D = Tuple[slice, slice, slice]
@@ -90,19 +78,20 @@ class NoduleImage:
     def nodule_segmentation(self) -> sitk.Image:
         raise NotImplemented("Must override this method!")
     
-    def image_array(self, preprocess=False) -> Image:
+    def image_array(self, preprocess) -> Image:
         image_arr = sitk.GetArrayFromImage(self.image)
         
         if preprocess:
             transforms = tio.Compose([
-                tio.RescaleIntensity(out_min_max=(-1, 1), percentiles=(0.5, 99.5), in_min_max=(CT_AIR, CT_BONE))
+                # tio.RescaleIntensity(out_min_max=(-1, 1), percentiles=(0.5, 99.5), in_min_max=(CT_AIR, CT_BONE))
+                tio.ZNormalization(),
             ])
             image_arr = transforms(np.expand_dims(image_arr, 0))[0]
         
         return image_arr
     
     
-    def nodule_slice(self, box_dim: Coord3D = (60,60,60), preprocess=True) -> Tuple[Image, Slice3D]:
+    def nodule_slice(self, preprocess, box_dim: Coord3D = (60,60,60)) -> Tuple[Image, Slice3D]:
         slice_3d = self._get_3d_slice(self.center_lps, box_dim)
 
         image_array = self.image_array(preprocess=preprocess)
@@ -145,7 +134,7 @@ class DICOMNodule(NoduleImage):
     
     def nodule_segmentation(self) -> sitk.Image:
         nod_id = os.path.basename(self.image_file_path).split("_")[-1]
-        seg_file = f"/data/kaplinsp/test_nnunet/lung_p{nod_id}.nii.gz"
+        seg_file = f"/data/kaplinsp/test_nnunet/lung_pd{nod_id}.nii.gz"
         return sitk.ReadImage(seg_file)
 
 @dataclass
