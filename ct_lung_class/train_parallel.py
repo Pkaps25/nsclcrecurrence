@@ -73,7 +73,6 @@ class NoduleTrainingApp:
         test_ratio: float,
     ) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
         nods = [[nod] for nod in nodules]
-        labels = [nod.is_nodule for nod in nodules]
         x_train, x_test = train_test_split(nods, test_size=test_ratio)
         return list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
             

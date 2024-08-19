@@ -34,28 +34,51 @@ log.setLevel(logging.DEBUG)
 image_cache = getCache("image_slices")
 seg_cache = getCache("segmentations")
 nodule_seg_cache = getCache("nodules")
+bb_cache = getCache("box")
 
 DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 
 def getNoduleInfoList() -> List[NoduleInfoTuple]:
     generator = NoduleInfoGenerator()
-    # generator.add_strategies(PrasadSampleGeneratoryStrategy, R17SampleGeneratorStrategy)
+    # generator.add_strategies(PrasadSampleGeneratoryStrategy)
     generator.add_strategies(R17SampleGeneratorStrategy)
     return generator.generate_all_samples()
 
+def resample_image(input_image: sitk.Image, output_size: int) -> sitk.Image:
+    resample = sitk.ResampleImageFilter()
+    resample.SetOutputSpacing(input_image.GetSpacing())
+    resample.SetSize([output_size]*3)
+    resample.SetOutputDirection(input_image.GetDirection())
+    resample.SetOutputOrigin(input_image.GetOrigin())
+    resample.SetTransform(sitk.Transform())
+    resample.SetDefaultPixelValue(input_image.GetPixelIDValue())
+    resample.SetInterpolator(sitk.sitkBSpline)
+    return resample.Execute(input_image)
+
     
-@image_cache.memoize(typed=True)
+# @image_cache.memoize(typed=True)
+@bb_cache.memoize(typed=True)
 def getCtRawNodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
-    width_irc: Coord3D,
+    # width_irc: Coord3D,
     preprocess: bool,
+    dilation: int,
+    resample_size,
 ) -> Tuple[Image, Slice3D]:
     log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct = image_type(nodule_file_path, center_lps)
-    return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
+    # return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
+    raw_nodule = ct.bounding_box_nodule(preprocess=preprocess, dilation=dilation)
+    resampled = resample_image(raw_nodule, resample_size)
+    return sitk.GetArrayFromImage(resampled), []
+    # padding = 500
+    # pad_width = [(0, max(0, padding - raw_nodule.shape[i])) for i in range(3)]
+    # padded_arr = np.pad(raw_nodule, pad_width=pad_width, mode='constant', constant_values=0)
+    # return padded_arr, []
+    
 
 @seg_cache.memoize(typed=True)
 def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
@@ -90,8 +113,12 @@ def getCtAugmentedNodule(
     noduleInfoTup: NoduleInfoTuple,
     width_irc: IrcTuple,
     preprocess: bool,
+    dilation: int,
+    resample_size: int
 ) -> Tuple[Image, Slice3D]:
-    ct_chunk, slice_3d = getCtRawNodule(noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, width_irc, preprocess=preprocess)
+    ct_chunk, slice_3d = getCtRawNodule(
+        noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, preprocess=preprocess, dilation=dilation, resample_size=resample_size
+    )
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
     transform_t = torch.eye(4)
 
@@ -195,15 +222,19 @@ class NoduleDataset(Dataset):
                 self.augmentation_dict,
                 noduleInfo_tup,
                 width_irc,
-                preprocess=False
+                preprocess=True,
+                dilation=5,
+                resample_size=128
             )
         else:
             nodule_a, slice_3d = getCtRawNodule(
                 noduleInfo_tup.file_path,
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
-                width_irc,
-                preprocess=False
+                # width_irc,
+                preprocess=True,
+                dilation=5,
+                resample_size=128,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
@@ -213,10 +244,10 @@ class NoduleDataset(Dataset):
             dtype=torch.long,
         )
         # lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
-        nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
+        # nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
         # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
-        nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
+        # nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
         # nodule_t_segmented = torch.cat([nodule_t, nod_segmentation_t], dim=0)
-        nodule_t_segmented = nodule_t * nod_segmentation_t
+        # nodule_t_segmented = nodule_t * nod_segmentation_t
 
-        return nodule_t_segmented, pos_t, noduleInfo_tup.nod_id 
+        return nodule_t, pos_t, noduleInfo_tup.nod_id 

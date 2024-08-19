@@ -103,6 +103,26 @@ class NoduleImage:
         # logger.info(f"Padded shape {padded_arr.shape} for nodule {self.image_file_path}")
         return padded_arr, slice_3d
         # return sliced_arr
+        
+    def bounding_box_nodule(self, preprocess: bool, dilation: int) -> sitk.Image:
+        label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
+        signed_distance_map = sitk.SignedMaurerDistanceMap(self.nodule_segmentation(), squaredDistance=False, useImageSpacing=True)
+        dilated_binary_image = (signed_distance_map<dilation)
+        label_shape_filter.Execute(dilated_binary_image)
+        bounding_box = label_shape_filter.GetBoundingBox(1) 
+        p1 = dilated_binary_image.TransformIndexToPhysicalPoint(bounding_box[0 : int(len(bounding_box) / 2)])
+        p2 = dilated_binary_image.TransformIndexToPhysicalPoint([x+sz for x,sz in zip(bounding_box[0 : int(len(bounding_box) / 2)], bounding_box[int(len(bounding_box) / 2) :])])
+
+        # crop using the indexes computed for imgB
+        ct = self.image
+        if preprocess:
+            ct = sitk.Normalize(ct)
+        imgB_start_index = ct.TransformPhysicalPointToIndex(p1)
+        imgB_end_index = ct.TransformPhysicalPointToIndex(p2)
+        slicer = sitk.SliceImageFilter()
+        slicer.SetStart(imgB_start_index)
+        slicer.SetStop(imgB_end_index)
+        return slicer.Execute(ct)
 
 class NRRDNodule(NoduleImage):
     """Class for loading nodules from NRRD"""
@@ -154,7 +174,11 @@ class SampleGeneratorStrategy:
 class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
     def generate_nodule_info() -> List[NoduleInfoTuple]:
         coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations.csv"
-        ids_to_exclude = set(["103", "128", "20", "26", "29", "69", "61"])
+        # ids_to_exclude = set(["103", "128", "20", "26", "29", "69", "61"])
+        ids_to_exclude = set()
+        skips = [5, 8, 15, 32, 33, 42, 61, 76, 82, 89, 98, 100, 130, 131, 138, 139, 147, 185]
+        for s in skips:
+            ids_to_exclude.add(str(s))
 
         nodule_infos = []
 
