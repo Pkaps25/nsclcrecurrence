@@ -24,6 +24,7 @@ from util.logconf import logging
 from util.util import enumerateWithEstimate
 from sklearn.model_selection import KFold, train_test_split
 from torch.utils.tensorboard import SummaryWriter
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
@@ -34,119 +35,44 @@ world_size = torch.cuda.device_count()
 
 
 class NoduleTrainingApp:
-    def __init__(self, cli_args):
+    def __init__(self, rank, world_size, train_data, test_data, cli_args):
         self.cli_args = cli_args
         self.time_str = datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
-
         self.totalTrainingSamples_count = 0
-
-        self.augmentation_dict = {}
-        if self.cli_args.augmented or self.cli_args.augment_flip:
-            self.augmentation_dict["flip"] = True
-        if self.cli_args.augmented or self.cli_args.augment_offset:
-            self.augmentation_dict["offset"] = 0.1
-        if self.cli_args.augmented or self.cli_args.augment_scale:
-            self.augmentation_dict["scale"] = 0.2
-        if self.cli_args.augmented or self.cli_args.augment_rotate:
-            self.augmentation_dict["rotate"] = True
-        if self.cli_args.augmented or self.cli_args.augment_noise:
-            self.augmentation_dict["noise"] = 25.0
-
         self.tag = self.cli_args.tag
-        self.use_cuda = torch.cuda.is_available()
-        self.device = torch.device("cuda:3" if self.use_cuda else "cpu")
+        self.rank = rank 
+        self.world_size = world_size
+        self.device = rank
         self.logger = logging.getLogger(__name__)
-        self.cross_validate = True if self.cli_args.k_folds > 1 else False
-        self.nodule_info_list = getNoduleInfoList()
-        random.shuffle(self.nodule_info_list)
-        if self.cross_validate:
-            self.k_fold_splits = self.generate_k_folds(self.cli_args.k_folds)
-        
-    def generate_k_folds(self, n_splits: int):
-        nodules = [[nod] for nod in self.nodule_info_list]
-        kfold = KFold(n_splits=n_splits, shuffle=True)
-        return kfold.split(nodules)
     
-    def _train_test_split(
-        self, 
-        nodules: List[NoduleInfoTuple], 
-        test_ratio: float,
-    ) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
-        nods = [[nod] for nod in nodules]
-        labels = [nod.is_nodule for nod in nodules]
-        x_train, x_test = train_test_split(nods, test_size=test_ratio)
-        return list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
-            
+        self.train_dl = train_data
+        self.val_dl = test_data
         
+        self.logger.info(f"Starting training on device {self.rank}")
+
+        self.logger.info(f"Init model on {self.rank}")
+        self.model = self.init_model()
+        self.optimizer = self.init_optimizer()
+
+        self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
+        self.writer = SummaryWriter(f"/data/kaplinsp/ddp_runs/")
+        self.init_logs_outputs()
+        self.logger.info(f"Done with init on {self.rank}")
+
+        # self.assert_no_leak(self.train_dl, self.val_dl)
+        # self.train(self.train_dl, self.val_dl)
+    
+    
     def init_model(self) -> torch.nn.Module:
-        # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
            dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2
         )
-        # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
-
-        if self.cli_args.finetune:
-            d = torch.load(self.cli_args.finetune, map_location="cpu")
-            model_blocks = [
-                n for n, subm in model.named_children() if len(list(subm.parameters())) > 0
-            ]
-            finetune_blocks = model_blocks[-self.cli_args.finetune_depth :]
-            model.load_state_dict(
-                {
-                    k: v
-                    for k, v in d["model_state"].items()
-                    if k.split(".")[0] not in model_blocks[-1]
-                },
-                strict=False,
-            )
-            for n, p in model.named_parameters():
-                if n.split(".")[0] not in finetune_blocks:
-                    p.requires_grad_(False)
-
-        if self.use_cuda:
-            model = model.to(self.device)
+        model = DDP(model.to(self.rank), device_ids=[self.rank])
 
         return model
 
     def init_optimizer(self) -> torch.optim.Optimizer:
-        # return SGD(self.model.parameters(),lr=lr, weight_decay=1e-4)
         return SGD(self.model.parameters(), lr=0.001, momentum=0.99, weight_decay=1e-4)
-
-    def init_train_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
-        train_ds = NoduleDataset(
-            nodule_info_list=nodule_list,
-            isValSet_bool=False,
-            augmentation_dict=self.augmentation_dict,
-        )
-
-        train_dl = DataLoader(
-            train_ds,
-            batch_size=self.cli_args.batch_size,
-            num_workers=self.cli_args.num_workers,
-            pin_memory=self.use_cuda,
-            drop_last=True,
-            shuffle=True
-        )
-
-        return train_dl
-
-    def init_val_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
-        
-        val_ds = NoduleDataset(
-            nodule_info_list=nodule_list,
-            isValSet_bool=True,
-        )
-
-        val_dl = DataLoader(
-            val_ds,
-            batch_size=self.cli_args.batch_size,
-            num_workers=self.cli_args.num_workers,
-            pin_memory=self.use_cuda,
-            drop_last=True,
-            shuffle=True
-        )
-
-        return val_dl
 
     def init_logs_outputs(self):
         model_output_dir = os.path.join(OUTPUT_PATH, self.run_dir)
@@ -167,38 +93,22 @@ class NoduleTrainingApp:
         assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) == len(self.nodule_info_list), "Using all samples in dataset"
 
     def main(self, *args):
-        self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
+        self.logger.info(f"Starting training on device {self.rank}")
 
         self.model = self.init_model()
         self.optimizer = self.init_optimizer()
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
-        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_{self.tag}")
+        self.writer = SummaryWriter(f"/data/kaplinsp/ddp_runs/")
         self.init_logs_outputs()
 
-        train_set, test_set = self._train_test_split(self.nodule_info_list, self.cli_args.val_ratio)
-        if not self.cross_validate:
-            train_dl = self.init_train_dataloader(train_set)
-            val_dl = self.init_val_dataloader(test_set)
-            self.assert_no_leak(train_dl, val_dl)
-            self.train(train_dl, val_dl)
-            return 
+        self.assert_no_leak(self.train_dl, self.val_dl)
+        self.train(self.train_dl, self.val_dl)
+         
         
-        # """ K FOLD VALIDATION"""
-        # for split_idx, (train_idx, val_idx) in enumerate(self.k_fold_splits):
-        #     self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log/split_{split_idx}"
-        #     if not os.path.exists(os.path.join(OUTPUT_PATH, self.run_dir)):
-        #         os.mkdir(os.path.join(OUTPUT_PATH, self.run_dir))
-            
-        #     self.logger.info(f"Starting cross validation split {split_idx}")
-        #     self.model = self.init_model()
-        #     self.optimizer = self.init_optimizer()
-            
-        #     train_dl = self.init_train_dataloader(train_idx=train_idx)
-        #     val_dl = self.init_val_dataloader(val_idx=val_idx)
-        #     self.train(train_dl, val_dl)
 
     def train(self, train_dl, val_dl):
+        self.logger.info("In train fn")
         best_f1 = -1
         best_accuracy = -1
         best_loss = float("inf")
@@ -250,6 +160,7 @@ class NoduleTrainingApp:
             #     )
                 
     def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
+        self.train_dl.sampler.set_epoch(epoch_ndx)
         self.model.train()
         train_dl.dataset.shuffleSamples()
         train_metrics = torch.zeros(
@@ -282,6 +193,7 @@ class NoduleTrainingApp:
         return train_metrics.to("cpu")
 
     def validate(self, epoch_ndx: int, val_dl: DataLoader) -> torch.Tensor:
+        self.val_dl.sampler.set_epoch(epoch_ndx)
         with torch.no_grad():
             self.model.eval()
             val_metrics = torch.zeros(
@@ -422,100 +334,3 @@ class NoduleTrainingApp:
             self.writer.add_scalar(f"{name}/{mode_str}", value, epoch_ndx)
 
         return metrics_dict
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    mp.set_start_method('spawn')
-    parser.add_argument(
-        "--batch-size",
-        help="Batch size to use for training",
-        default=8,
-        type=int,
-    )
-    parser.add_argument(
-        "--num-workers",
-        help="Number of worker processes for background data loading",
-        default=4,
-        type=int,
-    )
-    parser.add_argument(
-        "--epochs",
-        help="Number of epochs to train for",
-        default=50,
-        type=int,
-    )
-    parser.add_argument(
-        "--balanced",
-        help="Balance the training data to half positive, half negative.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augmented",
-        help="Augment the training data.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-flip",
-        help="Augment the training data by randomly flipping the data left-right, up-down, and front-back.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-offset",
-        help="Augment the training data by randomly offsetting the data slightly along the X and Y axes.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-scale",
-        help="Augment the training data by randomly increasing or decreasing the size of the candidate.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-rotate",
-        help="Augment the training data by randomly rotating the data around the head-foot axis.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-noise",
-        help="Augment the training data by randomly adding noise to the data.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--finetune",
-        help="Start finetuning from this model.",
-        default="",
-    )
-
-    parser.add_argument(
-        "--finetune-depth",
-        help="Number of blocks (counted from head) to include in finetuning",
-        type=int,
-        default=1,
-    )
-    parser.add_argument(
-        "--k-folds",
-        help="Number of cross-validation folds.",
-        type=int,
-        default=1,
-        required=False
-    )
-    parser.add_argument(
-        "--tag",
-        required=True,
-        help="Tag string for logging"
-    )
-    parser.add_argument(
-        "--val-ratio",
-        required=False,
-        type=float,
-        default=0.25
-    )
-    cli_args = parser.parse_args()
-    NoduleTrainingApp(cli_args).main()
