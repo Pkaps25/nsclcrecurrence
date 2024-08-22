@@ -43,55 +43,6 @@ PROJECT_ID = "17-353D_Prasad"
 
 DATA_DIR = "/data/kaplinsp/dicom/"
 
-
-# def get_output_prefix(subject_str: str) -> str:
-#     # proj_idx = subject_str.find(PROJECT_ID)
-#     # str_idx = subject_str.rfind("`")
-#     # acc = subject_str[proj_idx: str_idx]
-#     # return acc[acc.rfind("_") + 1:]
-#     return subject_str[subject_str.rfind("_")+1:]
-
-# def get_xnat_session():
-#     with open("xnat.cfg", 'r') as jsonfile:
-#         config = json.load(jsonfile)
-#     return xnat.connect(**config)
-
-# def read_coord_csv():
-#     with open("annots_michelle.csv") as csvfile:
-#         reader = csv.DictReader(csvfile)
-#         return list(reader)
-    
-# # EXCLUDED = {"32", "98", "226", "382"}    
-
-# annot_csv = read_coord_csv()
-# session = get_xnat_session()
-# project = session.projects['17-353D_Prasad']    
-# download = True
-# downloads = 0
-# for row in annot_csv:
-#     try:
-#         subject_id = row['XNAT Subject ID ']
-#         subject = project.subjects[subject_id]
-#         experiments = list(filter(lambda exp: exp.date == datetime.datetime.strptime(row["Pre CT"], '%m/%d/%y').date(), subject.experiments.values()))
-#         if not experiments:
-#             logger.warning(f"No experiemnts for {subject_id}")
-#             continue
-#         experiment = experiments[0]
-#         scan = experiment.scans[row["Series"]]
-#         file_path = f"/data/kaplinsp/prasad_d/{subject_id}.zip"
-#         if os.path.exists(file_path):
-#             logger.info(f"Skipping {subject_id} with existing file")
-#             continue
-
-#         logger.info(f"Downloading scan for {subject_id}")
-#         if download:
-#             downloads += 1
-#             scan.download(file_path)
-    
-#     except Exception as e:
-#         print(f"Encountering error for {subject_id}: {e}")
-
-# logger.info(f"Total of {downloads} downloads")
       
 import shutil
 def process_files():

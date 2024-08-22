@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import functools
 import logging
 import os
+import pickle
 import random
 from typing import Any, List, Optional, Tuple, Union
 import SimpleITK as sitk
@@ -12,6 +13,9 @@ from lungmask import LMInferer
 import torchio as tio
 import numpy.typing
 
+def read_pickle(path):
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
 logger = logging.getLogger(__name__)
 
@@ -175,10 +179,7 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
     def generate_nodule_info() -> List[NoduleInfoTuple]:
         coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations.csv"
         # ids_to_exclude = set(["103", "128", "20", "26", "29", "69", "61"])
-        ids_to_exclude = set()
-        skips = [5, 8, 15, 32, 33, 42, 61, 76, 82, 89, 98, 100, 130, 131, 138, 139, 147, 185]
-        for s in skips:
-            ids_to_exclude.add(str(s))
+        exclude_ids = read_pickle("/data/kaplinsp/exclude_r17.p")
 
         nodule_infos = []
 
@@ -187,7 +188,7 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
             next(reader)
             for row in reader:
                 nod_name = row[0]
-                if nod_name in ids_to_exclude:
+                if int(nod_name) in exclude_ids:
                     logger.info(f"EXCLUDING: {nod_name}")
                     continue
 
@@ -213,6 +214,7 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
         
         with open("/home/kaplinsp/ct_lung_class/ct_lung_class/exclude_michelle.csv", "r") as excludefile:
             exclude = [line.strip() for line in excludefile]
+        exclude += read_pickle("/data/kaplinsp/exclude_prasad.p")
         
         with open(coord_file) as f:
             reader = csv.reader(f, delimiter=",", quoting=csv.QUOTE_MINIMAL)
