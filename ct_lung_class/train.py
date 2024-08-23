@@ -55,6 +55,7 @@ class NoduleTrainingApp:
         self.writer = SummaryWriter(f"/data/kaplinsp/ddp_runs/")
         self.init_logs_outputs()
         self.logger.info(f"Done with init on {self.rank}")
+        self.loss_function = nn.CrossEntropyLoss()
 
         # self.assert_no_leak(self.train_dl, self.val_dl)
         # self.train(self.train_dl, self.val_dl)
@@ -117,14 +118,14 @@ class NoduleTrainingApp:
             )
 
             trnMetrics_t = self.train_epoch(epoch_ndx, train_dl)
-            self.log_metrics(epoch_ndx, "train", trnMetrics_t)
+            # self.log_metrics(epoch_ndx, "train", trnMetrics_t)
 
             valMetrics_t = self.validate(epoch_ndx, val_dl)
-            it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
+            # it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
 
-            val_f1 = it_val_metric["pr/f1_score"]
-            val_accuracy = it_val_metric["correct/all"]
-            val_loss = it_val_metric["loss/all"]
+            # val_f1 = it_val_metric["pr/f1_score"]
+            # val_accuracy = it_val_metric["correct/all"]
+            # val_loss = it_val_metric["loss/all"]
             
             # if val_f1 > best_f1:  # best val F1
             #     best_f1 = val_f1
@@ -158,87 +159,132 @@ class NoduleTrainingApp:
             #     )
                 
     def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
+        self.logger.info(f"E{epoch_ndx} Training")
         self.train_dl.sampler.set_epoch(epoch_ndx)
         self.model.train()
-        num_samples = len(train_dl.dataset) // self.world_size
-        train_metrics = torch.zeros(
-            METRICS_SIZE,
-            num_samples,
-            device=self.device,
-        )
+        
+        true_positive = 0
+        false_positive = 0
+        false_negative = 0
 
-        # batch_iter = enumerateWithEstimate(
-        #     train_dl,
-        #     f"E{epoch_ndx} Training",
-        #     start_ndx=train_dl.num_workers,
-        # )
-        self.logger.info(f"E{epoch_ndx} Training")
-        for batch_ndx, batch_tup in enumerate(train_dl):
+        
+        total_loss = 0.0
+        for batch_tup in train_dl:
             self.optimizer.zero_grad()
 
             torch.autograd.set_detect_anomaly(True)
-            loss_var = self.compute_batch_loss(
-                batch_ndx,
-                batch_tup,
-                train_dl.batch_size,
-                train_metrics,
-            )
+            inputs, labels  = batch_tup[0].to(self.device, non_blocking=True),  batch_tup[1].to(self.device, non_blocking=True)
+
+            logits_g = self.model(inputs)
+            loss_var = self.loss_function(logits_g, labels)
+            probabilities = torch.softmax(logits_g, dim=1)
+            predictions = (probabilities[:, 1] > 0.5).int()
 
             loss_var.backward()
             self.optimizer.step()
+            total_loss += loss_var.item()
+            
+            true_positive += ((predictions == 1) & (labels == 1)).sum().item()
+            false_positive += ((predictions == 1) & (labels == 0)).sum().item()
+            false_negative += ((predictions == 0) & (labels == 1)).sum().item()
+        
+        total_loss_tensor = torch.tensor(total_loss, device=self.device)
+        torch.distributed.all_reduce(total_loss_tensor, op=torch.distributed.ReduceOp.SUM)
+        total_loss = total_loss_tensor.item() / self.world_size  # Average the loss across all GPUs
 
-        return train_metrics
+        true_positive_tensor = torch.tensor(true_positive, device=self.device)
+        false_positive_tensor = torch.tensor(false_positive, device=self.device)
+        false_negative_tensor = torch.tensor(false_negative, device=self.device)
+
+        torch.distributed.all_reduce(true_positive_tensor, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(false_positive_tensor, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(false_negative_tensor, op=torch.distributed.ReduceOp.SUM)
+
+        true_positive = true_positive_tensor.item()
+        false_positive = false_positive_tensor.item()
+        false_negative = false_negative_tensor.item()
+
+        # Calculate precision, recall, and F1-score
+        precision = true_positive / (true_positive + false_positive) if (true_positive + false_positive) > 0 else 0.0
+        recall = true_positive / (true_positive + false_negative) if (true_positive + false_negative) > 0 else 0.0
+        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        if self.rank == 0:
+            self.logger.info(
+                    f"**TRAIN** Epoch {epoch_ndx} | N = {len(train_dl)}"
+                    f"Validation Loss: {total_loss:.4f} | "
+                    f"Precision: {precision:.4f} | "
+                    f"Recall: {recall:.4f} | "
+                    f"F1-Score: {f1_score:.4f}"
+                )
+
 
     def validate(self, epoch_ndx: int, val_dl: DataLoader) -> torch.Tensor:
         self.val_dl.sampler.set_epoch(epoch_ndx)
         with torch.no_grad():
             self.model.eval()
-            num_samples = len(val_dl.dataset) // self.world_size
-            val_metrics = torch.zeros(
-                METRICS_SIZE,
-                num_samples,
-                device=self.device,
-            )
 
-            batch_iter = enumerateWithEstimate(
-                val_dl,
-                f"E{epoch_ndx} Validation",
-                # start_ndx=val_dl.num_workers,
-            )
-            for batch_ndx, batch_tup in batch_iter:
-                self.compute_batch_loss(
-                    batch_ndx,
-                    batch_tup,
-                    val_dl.batch_size,
-                    val_metrics,
+            total_loss = 0.0
+            total_loss = 0.0
+            true_positive = 0
+            false_positive = 0
+            false_negative = 0
+            for batch_tup in val_dl:
+                inputs, labels  = batch_tup[0].to(self.device, non_blocking=True),  batch_tup[1].to(self.device, non_blocking=True)
+                logits_g = self.model(inputs)
+                loss_var = self.loss_function(logits_g, labels)
+                probabilities = torch.softmax(logits_g, dim=1)
+                predictions = (probabilities[:, 1] > 0.5).int()
+                total_loss += loss_var.item()
+                
+                true_positive += ((predictions == 1) & (labels == 1)).sum().item()
+                false_positive += ((predictions == 1) & (labels == 0)).sum().item()
+                false_negative += ((predictions == 0) & (labels == 1)).sum().item()
+                
+            total_loss_tensor = torch.tensor(total_loss, device=self.device)
+            torch.distributed.all_reduce(total_loss_tensor, op=torch.distributed.ReduceOp.SUM)
+            total_loss = total_loss_tensor.item() / self.world_size  # Average the loss across all GPUs
+
+            true_positive_tensor = torch.tensor(true_positive, device=self.device)
+            false_positive_tensor = torch.tensor(false_positive, device=self.device)
+            false_negative_tensor = torch.tensor(false_negative, device=self.device)
+
+            torch.distributed.all_reduce(true_positive_tensor, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(false_positive_tensor, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(false_negative_tensor, op=torch.distributed.ReduceOp.SUM)
+
+            true_positive = true_positive_tensor.item()
+            false_positive = false_positive_tensor.item()
+            false_negative = false_negative_tensor.item()
+
+            # Calculate precision, recall, and F1-score
+            precision = true_positive / (true_positive + false_positive) if (true_positive + false_positive) > 0 else 0.0
+            recall = true_positive / (true_positive + false_negative) if (true_positive + false_negative) > 0 else 0.0
+            f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+            if self.rank == 0:
+                self.logger.info(
+                    f"**VAL** Epoch {epoch_ndx} | N = {len(val_dl)}"
+                    f"Validation Loss: {total_loss:.4f} | "
+                    f"Precision: {precision:.4f} | "
+                    f"Recall: {recall:.4f} | "
+                    f"F1-Score: {f1_score:.4f}"
                 )
 
-        return val_metrics
 
-    def compute_batch_loss(
-        self, batch_ndx: int, batch_tup: DatasetItem, batch_size: int, metrics_g: torch.Tensor
-    ) -> torch.Tensor:
-        input_t, label_t  = batch_tup
+    # def compute_batch_loss(
+    #     self, batch_ndx: int, batch_tup: DatasetItem, batch_size: int, metrics_g: torch.Tensor
+    # ) -> torch.Tensor:
+    #     input_t, label_t  = batch_tup
 
-        input_g = input_t.to(self.device, non_blocking=True)
-        label_g = label_t.to(self.device, non_blocking=True)
+    #     input_g = input_t.to(self.device, non_blocking=True)
+    #     label_g = label_t.to(self.device, non_blocking=True)
 
-        logits_g = self.model(input_g)
-        probability_g = torch.softmax(logits_g, dim=1)
-        loss_func = nn.CrossEntropyLoss()
-        loss_g = loss_func(logits_g, label_g)
-
-
-        # Only track metrics for the subset processed by this GPU
-        local_batch_start_ndx = batch_ndx * batch_size % metrics_g.size(1)
-        local_batch_end_ndx = local_batch_start_ndx + label_t.size(0)
-
-        metrics_g[METRICS_LABEL_NDX, local_batch_start_ndx:local_batch_end_ndx] = label_g
-        metrics_g[METRICS_PRED_NDX, local_batch_start_ndx:local_batch_end_ndx] = probability_g[:, 1]
-        metrics_g[METRICS_LOSS_NDX, local_batch_start_ndx:local_batch_end_ndx] = loss_g
-
-
-        return loss_g.mean()
+    #     logits_g = self.model(input_g)
+    #     probability_g = torch.softmax(logits_g, dim=1)
+    #     loss_func = nn.CrossEntropyLoss()
+    #     loss_g = loss_func(logits_g, label_g)
+    #     return loss_g
 
     def log_metrics(
         self,
