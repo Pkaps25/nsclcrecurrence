@@ -31,14 +31,11 @@ LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
 OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-world_size = torch.cuda.device_count()
-
 
 class NoduleTrainingApp:
     def __init__(self, rank, world_size, train_data, test_data, cli_args):
         self.cli_args = cli_args
         self.time_str = datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
-        self.totalTrainingSamples_count = 0
         self.tag = self.cli_args.tag
         self.rank = rank 
         self.world_size = world_size
@@ -75,16 +72,17 @@ class NoduleTrainingApp:
         return SGD(self.model.parameters(), lr=0.001, momentum=0.99, weight_decay=1e-4)
 
     def init_logs_outputs(self):
-        model_output_dir = os.path.join(OUTPUT_PATH, self.run_dir)
-        if not os.path.exists(model_output_dir):
-            os.mkdir(model_output_dir)
+        pass
+        # model_output_dir = os.path.join(OUTPUT_PATH, self.run_dir)
+        # if not os.path.exists(model_output_dir):
+        #     os.mkdir(model_output_dir)
 
-        if not os.path.exists(LOG_DIR):
-            os.mkdir(LOG_DIR)
+        # if not os.path.exists(LOG_DIR):
+        #     os.mkdir(LOG_DIR)
 
-        log_file = os.path.join(LOG_DIR, self.run_dir)
-        file_handler = logging.FileHandler(log_file)
-        self.logger.addHandler(file_handler)
+        # log_file = os.path.join(LOG_DIR, self.run_dir)
+        # file_handler = logging.FileHandler(log_file)
+        # self.logger.addHandler(file_handler)
         
     def assert_no_leak(self, train_dl, val_dl):
         trains = set(f"{nod.file_path}{nod.center_lps}" for nod in train_dl.dataset.noduleInfo_list)
@@ -162,19 +160,20 @@ class NoduleTrainingApp:
     def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
         self.train_dl.sampler.set_epoch(epoch_ndx)
         self.model.train()
-        train_dl.dataset.shuffleSamples()
+        num_samples = len(train_dl.dataset) // self.world_size
         train_metrics = torch.zeros(
             METRICS_SIZE,
-            len(train_dl.dataset),
+            num_samples,
             device=self.device,
         )
 
-        batch_iter = enumerateWithEstimate(
-            train_dl,
-            f"E{epoch_ndx} Training",
-            start_ndx=train_dl.num_workers,
-        )
-        for batch_ndx, batch_tup in batch_iter:
+        # batch_iter = enumerateWithEstimate(
+        #     train_dl,
+        #     f"E{epoch_ndx} Training",
+        #     start_ndx=train_dl.num_workers,
+        # )
+        self.logger.info(f"E{epoch_ndx} Training")
+        for batch_ndx, batch_tup in enumerate(train_dl):
             self.optimizer.zero_grad()
 
             torch.autograd.set_detect_anomaly(True)
@@ -188,24 +187,23 @@ class NoduleTrainingApp:
             loss_var.backward()
             self.optimizer.step()
 
-        self.totalTrainingSamples_count += len(train_dl.dataset)
-
-        return train_metrics.to("cpu")
+        return train_metrics
 
     def validate(self, epoch_ndx: int, val_dl: DataLoader) -> torch.Tensor:
         self.val_dl.sampler.set_epoch(epoch_ndx)
         with torch.no_grad():
             self.model.eval()
+            num_samples = len(val_dl.dataset) // self.world_size
             val_metrics = torch.zeros(
                 METRICS_SIZE,
-                len(val_dl.dataset),
+                num_samples,
                 device=self.device,
             )
 
             batch_iter = enumerateWithEstimate(
                 val_dl,
                 f"E{epoch_ndx} Validation",
-                start_ndx=val_dl.num_workers,
+                # start_ndx=val_dl.num_workers,
             )
             for batch_ndx, batch_tup in batch_iter:
                 self.compute_batch_loss(
@@ -215,38 +213,30 @@ class NoduleTrainingApp:
                     val_metrics,
                 )
 
-        return val_metrics.to("cpu")
+        return val_metrics
 
     def compute_batch_loss(
         self, batch_ndx: int, batch_tup: DatasetItem, batch_size: int, metrics_g: torch.Tensor
     ) -> torch.Tensor:
-        input_t, label_t, _,  = batch_tup
+        input_t, label_t  = batch_tup
 
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
 
         logits_g = self.model(input_g)
-        foo = (
-            np.exp(logits_g.detach().cpu().numpy())
-            / np.exp(logits_g.detach().cpu().numpy()).sum(1)[:, None]
-        )
-        probability_g = torch.tensor(foo)
-        # probability_g=torch.exp(logits_g)/torch.sum(torch.exp(logits_g), 1)[:, None]
-
-        # HINGE LOSS
-        # loss_func=nn.HingeEmbeddingLoss()
-        # loss_g=loss_func(logits_g,label_g)
-
-        # CROSS ENTROPY LOSS
+        probability_g = torch.softmax(logits_g, dim=1)
         loss_func = nn.CrossEntropyLoss()
-        loss_g = loss_func(logits_g, label_g[:, 1])
+        loss_g = loss_func(logits_g, label_g)
 
-        start_ndx = batch_ndx * batch_size
-        end_ndx = start_ndx + label_t.size(0)
 
-        metrics_g[METRICS_LABEL_NDX, start_ndx:end_ndx] = label_g[:, 1]
-        metrics_g[METRICS_PRED_NDX, start_ndx:end_ndx] = probability_g[:, 1]
-        metrics_g[METRICS_LOSS_NDX, start_ndx:end_ndx] = loss_g
+        # Only track metrics for the subset processed by this GPU
+        local_batch_start_ndx = batch_ndx * batch_size % metrics_g.size(1)
+        local_batch_end_ndx = local_batch_start_ndx + label_t.size(0)
+
+        metrics_g[METRICS_LABEL_NDX, local_batch_start_ndx:local_batch_end_ndx] = label_g
+        metrics_g[METRICS_PRED_NDX, local_batch_start_ndx:local_batch_end_ndx] = probability_g[:, 1]
+        metrics_g[METRICS_LOSS_NDX, local_batch_start_ndx:local_batch_end_ndx] = loss_g
+
 
         return loss_g.mean()
 
@@ -280,18 +270,45 @@ class NoduleTrainingApp:
         metrics_dict["loss/neg"] = metrics[METRICS_LOSS_NDX, negative_label_mask].mean()
         metrics_dict["loss/pos"] = metrics[METRICS_LOSS_NDX, positive_label_mask].mean()
 
-        metrics_dict["correct/all"] = (pos_correct + neg_correct) / metrics.shape[1] * 100
-        metrics_dict["correct/neg"] = (neg_correct) / neg_count * 100
-        metrics_dict["correct/pos"] = (pos_correct) / pos_count * 100
-
-        precision = metrics_dict["pr/precision"] = true_positive_count / np.float32(
-            true_positive_count + false_positive_count
-        )
-        recall = metrics_dict["pr/recall"] = true_positive_count / np.float32(
-            true_positive_count + false_negative_count
+        # Calculate overall accuracy
+        metrics_dict["correct/all"] = np.divide(
+            (pos_correct + neg_correct) * 100, 
+            metrics.shape[1], 
+            where=metrics.shape[1] != 0
         )
 
-        metrics_dict["pr/f1_score"] = 2 * (precision * recall) / (precision + recall)
+        # Calculate negative class accuracy
+        metrics_dict["correct/neg"] = np.divide(
+            neg_correct * 100, 
+            neg_count, 
+            where=neg_count != 0
+        )
+
+        # Calculate positive class accuracy
+        metrics_dict["correct/pos"] = np.divide(
+            pos_correct * 100, 
+            pos_count, 
+            where=pos_count != 0
+        )
+
+        metrics_dict["pr/precision"] = precision = np.divide(
+            true_positive_count, 
+            true_positive_count + false_positive_count, 
+            where=(true_positive_count + false_positive_count) != 0
+        )
+        
+        metrics_dict["pr/recall"] = recall = np.divide(
+            true_positive_count, 
+            true_positive_count + false_negative_count, 
+            where=(true_positive_count + false_negative_count) != 0
+        )
+
+
+        metrics_dict["pr/f1_score"] = np.divide(
+            2 * (precision * recall), 
+            precision + recall, 
+            where=(precision + recall) != 0
+        )
 
         self.logger.info(
             (

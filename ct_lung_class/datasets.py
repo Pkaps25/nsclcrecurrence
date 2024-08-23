@@ -36,7 +36,7 @@ seg_cache = getCache("segmentations")
 nodule_seg_cache = getCache("nodules")
 bb_cache = getCache("box")
 
-DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
+DatasetItem = Tuple[torch.Tensor, int]
 
 
 def getNoduleInfoList() -> List[NoduleInfoTuple]:
@@ -239,10 +239,6 @@ class NoduleDataset(Dataset):
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
 
-        pos_t = torch.tensor(
-            [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
-            dtype=torch.long,
-        )
         # lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
         # nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
         # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
@@ -250,4 +246,4 @@ class NoduleDataset(Dataset):
         # nodule_t_segmented = torch.cat([nodule_t, nod_segmentation_t], dim=0)
         # nodule_t_segmented = nodule_t * nod_segmentation_t
 
-        return nodule_t, pos_t, noduleInfo_tup.nod_id 
+        return nodule_t, noduleInfo_tup.is_nodule

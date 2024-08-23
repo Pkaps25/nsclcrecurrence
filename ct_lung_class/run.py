@@ -110,7 +110,7 @@ def ddp_setup(rank: int, world_size: int):
     os.environ['MASTER_PORT'] = '12355'
 
     # initialize the process group
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
 
 def ddp_cleanup():
     dist.destroy_process_group()
@@ -126,20 +126,20 @@ class MainRunner:
             train_data,
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
-            pin_memory=self.use_cuda,
+            pin_memory=True,
             drop_last=True,
             shuffle=False,
-            sampler=DistributedSampler(train_data)
+            sampler=DistributedSampler(train_data, rank=rank)
         )
         
         val_dl = DataLoader(
                 test_data,
                 batch_size=self.cli_args.batch_size,
                 num_workers=self.cli_args.num_workers,
-                pin_memory=self.use_cuda,
+                pin_memory=True,
                 drop_last=True,
                 shuffle=False,
-                sampler=DistributedSampler(test_data)
+                sampler=DistributedSampler(test_data, rank=rank)
             )
         trainer = NoduleTrainingApp(rank, world_size, train_dl, val_dl, cli_args)
         print("Training on main fn")
