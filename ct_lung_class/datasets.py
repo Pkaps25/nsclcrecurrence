@@ -190,12 +190,12 @@ class NoduleDataset(Dataset):
 
         width_irc = (50, 50, 50)
 
-        if self.augmentation_dict:
+        if self.augmentation_dict and len(self.augmentation_dict) > 0:
             nodule_t, slice_3d = getCtAugmentedNodule(
                 self.augmentation_dict,
                 noduleInfo_tup,
                 width_irc,
-                preprocess=False
+                preprocess=True
             )
         else:
             nodule_a, slice_3d = getCtRawNodule(
@@ -203,7 +203,7 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
                 width_irc,
-                preprocess=False
+                preprocess=True
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
@@ -213,7 +213,7 @@ class NoduleDataset(Dataset):
             dtype=torch.long,
         )
         # lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
-        nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
+        nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=3)
         # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
         nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
         # nodule_t_segmented = torch.cat([nodule_t, nod_segmentation_t], dim=0)
