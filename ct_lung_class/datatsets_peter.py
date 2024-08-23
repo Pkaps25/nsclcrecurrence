@@ -11,6 +11,11 @@ import numpy as np
 from lungmask import LMInferer
 import torchio as tio
 import numpy.typing
+import pickle 
+
+def read_pickle(p):
+    with open(p, "rb") as f:
+        return pickle.load(f)
 
 
 logger = logging.getLogger(__name__)
@@ -114,8 +119,9 @@ class NoduleImage:
         p2 = dilated_binary_image.TransformIndexToPhysicalPoint([x+sz for x,sz in zip(bounding_box[0 : int(len(bounding_box) / 2)], bounding_box[int(len(bounding_box) / 2) :])])
 
         # crop using the indexes computed for imgB
-        ct = self.image
+        ct: sitk.Image = self.image
         if preprocess:
+            ct = sitk.Clamp(ct, ct.GetPixelIDValue(), -1000, 1000)
             ct = sitk.Normalize(ct)
         imgB_start_index = ct.TransformPhysicalPointToIndex(p1)
         imgB_end_index = ct.TransformPhysicalPointToIndex(p2)
@@ -213,6 +219,7 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
         
         with open("/home/kaplinsp/ct_lung_class/ct_lung_class/exclude_michelle.csv", "r") as excludefile:
             exclude = [line.strip() for line in excludefile]
+        exclude += read_pickle("/data/kaplinsp/exclude_prasad.p")
         
         with open(coord_file) as f:
             reader = csv.reader(f, delimiter=",", quoting=csv.QUOTE_MINIMAL)

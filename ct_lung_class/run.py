@@ -137,12 +137,11 @@ class MainRunner:
                 batch_size=self.cli_args.batch_size,
                 num_workers=self.cli_args.num_workers,
                 pin_memory=True,
-                drop_last=True,
+                drop_last=False,
                 shuffle=False,
                 sampler=DistributedSampler(test_data, rank=rank)
             )
         trainer = NoduleTrainingApp(rank, world_size, train_dl, val_dl, cli_args)
-        print("Training on main fn")
         trainer.train(train_dl, val_dl)
         ddp_cleanup
     

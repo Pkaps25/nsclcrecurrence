@@ -223,8 +223,8 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup,
                 width_irc,
                 preprocess=True,
-                dilation=5,
-                resample_size=128
+                dilation=2,
+                resample_size=64
             )
         else:
             nodule_a, slice_3d = getCtRawNodule(
@@ -233,8 +233,8 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup.center_lps,
                 # width_irc,
                 preprocess=True,
-                dilation=5,
-                resample_size=128,
+                dilation=2,
+                resample_size=64,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)

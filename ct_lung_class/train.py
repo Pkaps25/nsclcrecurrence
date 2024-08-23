@@ -45,16 +45,13 @@ class NoduleTrainingApp:
         self.train_dl = train_data
         self.val_dl = test_data
         
-        self.logger.info(f"Starting training on device {self.rank}")
 
-        self.logger.info(f"Init model on {self.rank}")
         self.model = self.init_model()
         self.optimizer = self.init_optimizer()
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
         self.writer = SummaryWriter(f"/data/kaplinsp/ddp_runs/")
         self.init_logs_outputs()
-        self.logger.info(f"Done with init on {self.rank}")
         self.loss_function = nn.CrossEntropyLoss()
 
         # self.assert_no_leak(self.train_dl, self.val_dl)
@@ -112,10 +109,10 @@ class NoduleTrainingApp:
         best_accuracy = -1
         best_loss = float("inf")
         for epoch_ndx in range(1, self.cli_args.epochs + 1):
-
-            self.logger.info(
-                f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
-            )
+            if self.rank == 0:
+                self.logger.info(
+                    f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
+                )
 
             trnMetrics_t = self.train_epoch(epoch_ndx, train_dl)
             # self.log_metrics(epoch_ndx, "train", trnMetrics_t)
@@ -211,19 +208,22 @@ class NoduleTrainingApp:
 
         if self.rank == 0:
             self.logger.info(
-                    f"**TRAIN** Epoch {epoch_ndx} | N = {len(train_dl)}"
-                    f"Validation Loss: {total_loss:.4f} | "
+                    f"**TRAIN** Epoch {epoch_ndx} | N = {len(train_dl.dataset)}"
+                    f"Loss: {total_loss:.4f} | "
                     f"Precision: {precision:.4f} | "
                     f"Recall: {recall:.4f} | "
                     f"F1-Score: {f1_score:.4f}"
                 )
+        self.writer.add_scalar(f"Loss/train", total_loss, epoch_ndx)
+        self.writer.add_scalar(f"Precision/train", precision, epoch_ndx)
+        self.writer.add_scalar(f"Recall/train", recall, epoch_ndx)
+        self.writer.add_scalar(f"f1/train", f1_score, epoch_ndx)
 
 
     def validate(self, epoch_ndx: int, val_dl: DataLoader) -> torch.Tensor:
         self.val_dl.sampler.set_epoch(epoch_ndx)
+        self.model.eval()
         with torch.no_grad():
-            self.model.eval()
-
             total_loss = 0.0
             total_loss = 0.0
             true_positive = 0
@@ -264,12 +264,18 @@ class NoduleTrainingApp:
 
             if self.rank == 0:
                 self.logger.info(
-                    f"**VAL** Epoch {epoch_ndx} | N = {len(val_dl)}"
-                    f"Validation Loss: {total_loss:.4f} | "
+                    f"**VAL** Epoch {epoch_ndx} N = {len(val_dl.dataset)} |"
+                    f"Loss: {total_loss:.4f} | "
                     f"Precision: {precision:.4f} | "
                     f"Recall: {recall:.4f} | "
                     f"F1-Score: {f1_score:.4f}"
                 )
+                
+            
+            self.writer.add_scalar(f"Loss/val", total_loss, epoch_ndx)
+            self.writer.add_scalar(f"Precision/val", precision, epoch_ndx)
+            self.writer.add_scalar(f"Recall/val", recall, epoch_ndx)
+            self.writer.add_scalar(f"f1/val", f1_score, epoch_ndx)
 
 
     # def compute_batch_loss(
