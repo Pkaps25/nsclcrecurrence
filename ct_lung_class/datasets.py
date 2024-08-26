@@ -18,13 +18,19 @@ import numpy as np
 import numpy.typing
 
 # from transforms import RandomCrop
-from datatsets_peter import (
-    Coord3D, NoduleInfoGenerator, PrasadSampleGeneratoryStrategy, 
-    R17SampleGeneratorStrategy, NoduleImage, NoduleInfoTuple, Slice3D, Image
+from image import (
+    Coord3D,
+    NoduleInfoGenerator,
+    PrasadSampleGeneratoryStrategy,
+    R17SampleGeneratorStrategy,
+    NoduleImage,
+    NoduleInfoTuple,
+    Slice3D,
+    Image,
 )
 from util.disk import getCache
 from util.logconf import logging
-from util.util import IrcTuple 
+from util.util import IrcTuple
 
 # DATA_DIR = os.getenv("DATA_DIR")
 
@@ -46,10 +52,17 @@ def getNoduleInfoList() -> List[NoduleInfoTuple]:
     generator.add_strategies(R17SampleGeneratorStrategy)
     return generator.generate_all_samples()
 
+
 def resample_image(input_image: sitk.Image, output_size: int) -> sitk.Image:
     resample = sitk.ResampleImageFilter()
-    resample.SetOutputSpacing(input_image.GetSpacing())
-    resample.SetSize([output_size]*3)
+    original_size = input_image.GetSize()
+    original_spacing = input_image.GetSpacing()
+    # new_spacing = old_size * old_spacing / new_size
+    output_spacing = [
+        original_size[i] * original_spacing[i] / output_size for i in range(len(original_size))
+    ]
+    resample.SetOutputSpacing(output_spacing)
+    resample.SetSize([output_size] * 3)
     resample.SetOutputDirection(input_image.GetDirection())
     resample.SetOutputOrigin(input_image.GetOrigin())
     resample.SetTransform(sitk.Transform())
@@ -57,29 +70,25 @@ def resample_image(input_image: sitk.Image, output_size: int) -> sitk.Image:
     resample.SetInterpolator(sitk.sitkBSpline)
     return resample.Execute(input_image)
 
-    
+
 # @image_cache.memoize(typed=True)
 @bb_cache.memoize(typed=True)
 def getCtRawNodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
-    # width_irc: Coord3D,
     preprocess: bool,
     dilation: int,
     resample_size,
 ) -> Tuple[Image, Slice3D]:
     log.info(f"Slicing nodule from image for {nodule_file_path}")
-    ct = image_type(nodule_file_path, center_lps)
+    ct: NoduleImage = image_type(nodule_file_path, center_lps)
     # return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
-    raw_nodule = ct.bounding_box_nodule(preprocess=preprocess, dilation=dilation)
+    raw_nodule = ct.extract_bounding_box_nodule(
+        preprocess=preprocess, dilation_mm=dilation)
     resampled = resample_image(raw_nodule, resample_size)
-    return sitk.GetArrayFromImage(resampled) 
-    # padding = 500
-    # pad_width = [(0, max(0, padding - raw_nodule.shape[i])) for i in range(3)]
-    # padded_arr = np.pad(raw_nodule, pad_width=pad_width, mode='constant', constant_values=0)
-    # return padded_arr, []
-    
+    return sitk.GetArrayFromImage(resampled)
+
 
 @seg_cache.memoize(typed=True)
 def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
@@ -87,27 +96,51 @@ def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps:
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
     return ct.lung_segmentation()
 
+
 @nodule_seg_cache.memoize(typed=True)
-def get_nodule_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D, dilation: Optional[int] = None) -> Image:
+def get_nodule_segmentation(
+    nodule_file_path: str,
+    image_type: NoduleImage,
+    center_lps: Coord3D,
+    dilation: Optional[int] = None,
+) -> Image:
     log.info(f"Segmenting nodule for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    segmentation = ct.nodule_segmentation()
+    segmentation = ct.nodule_segmentation_image()
     if dilation is not None:
-        signed_distance_map = sitk.SignedMaurerDistanceMap(segmentation, squaredDistance=False, useImageSpacing=True)
-        segmentation = (signed_distance_map < dilation)
-    
+        signed_distance_map = sitk.SignedMaurerDistanceMap(
+            segmentation, squaredDistance=False, useImageSpacing=True
+        )
+        segmentation = signed_distance_map < dilation
+
     return sitk.GetArrayFromImage(segmentation)
 
 
-def slice_and_pad_segmentation(seg_type: str, nodule_info_tup: NoduleInfoTuple, box_dim: Coord3D, slice_3d: Slice3D, dilation: Optional[int] = None):
+def slice_and_pad_segmentation(
+    seg_type: str,
+    nodule_info_tup: NoduleInfoTuple,
+    box_dim: Coord3D,
+    slice_3d: Slice3D,
+    dilation: Optional[int] = None,
+):
     if seg_type == "lung":
-        segmentation = get_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps)
+        segmentation = get_segmentation(
+            nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps
+        )
     elif seg_type == "nodule":
-        segmentation = get_nodule_segmentation(nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps, dilation)
+        segmentation = get_nodule_segmentation(
+            nodule_info_tup.file_path,
+            nodule_info_tup.image_type,
+            nodule_info_tup.center_lps,
+            dilation,
+        )
     sliced_seg = segmentation[slice_3d]
-    pad_width = [(0, max(0, box_dim[2-i] - sliced_seg.shape[i])) for i in range(3)]
-    padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode='constant', constant_values=0)
+    pad_width = [(0, max(0, box_dim[2 - i] - sliced_seg.shape[i]))
+                 for i in range(3)]
+    padded_arr = np.pad(sliced_seg, pad_width=pad_width,
+                        mode="constant", constant_values=0)
     return padded_arr
+
 
 def getCtAugmentedNodule(
     augmentation_dict: Optional[dict],
@@ -115,13 +148,18 @@ def getCtAugmentedNodule(
     width_irc: IrcTuple,
     preprocess: bool,
     dilation: int,
-    resample_size: int
+    resample_size: int,
 ) -> Tuple[Image, Slice3D]:
     ct_chunk = getCtRawNodule(
-        noduleInfoTup.file_path, noduleInfoTup.image_type, noduleInfoTup.center_lps, preprocess=preprocess, dilation=dilation, resample_size=resample_size
+        noduleInfoTup.file_path,
+        noduleInfoTup.image_type,
+        noduleInfoTup.center_lps,
+        preprocess=preprocess,
+        dilation=dilation,
+        resample_size=resample_size,
     )
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
-    
+
     transform_t = torch.eye(4)
 
     for i in range(3):
@@ -174,7 +212,7 @@ def getCtAugmentedNodule(
 
         augmented_chunk += noise_t
 
-    return augmented_chunk[0] 
+    return augmented_chunk[0]
 
 
 class NoduleDataset(Dataset):
@@ -195,7 +233,8 @@ class NoduleDataset(Dataset):
         else:
             raise Exception("Unknown sort: " + repr(sortby_str))
 
-        self.negative_list = [nt for nt in self.noduleInfo_list if not nt.is_nodule]
+        self.negative_list = [
+            nt for nt in self.noduleInfo_list if not nt.is_nodule]
 
         self.pos_list = [nt for nt in self.noduleInfo_list if nt.is_nodule]
 
@@ -206,13 +245,12 @@ class NoduleDataset(Dataset):
                 "validation" if isValSet_bool else "training",
             )
         )
-        
+
     def shuffleSamples(self):
         pass
 
     def __len__(self):
         return len(self.noduleInfo_list)
-    
 
     def __getitem__(self, ndx) -> DatasetItem:
         noduleInfo_tup = self.noduleInfo_list[ndx]
@@ -225,18 +263,17 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup,
                 width_irc,
                 preprocess=True,
-                dilation=3,
-                resample_size=128
+                dilation=5,
+                resample_size=64,
             )
         else:
             nodule_a = getCtRawNodule(
                 noduleInfo_tup.file_path,
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
-                # width_irc,
                 preprocess=True,
-                dilation=3,
-                resample_size=128,
+                dilation=5,
+                resample_size=64,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
@@ -245,11 +282,5 @@ class NoduleDataset(Dataset):
             [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
             dtype=torch.long,
         )
-        # lung_segmentation = slice_and_pad_segmentation("lung", noduleInfo_tup, width_irc, slice_3d)
-        # nod_segmentation = slice_and_pad_segmentation("nodule", noduleInfo_tup, width_irc, slice_3d, dilation=5)
-        # lung_segmentation_t = torch.from_numpy(lung_segmentation).unsqueeze(0)
-        # nod_segmentation_t = torch.from_numpy(nod_segmentation).unsqueeze(0)
-        # nodule_t_segmented = torch.cat([nodule_t, nod_segmentation_t], dim=0)
-        # nodule_t_segmented = nodule_t * nod_segmentation_t
 
-        return nodule_t, pos_t, noduleInfo_tup.nod_id 
+        return nodule_t, pos_t, noduleInfo_tup.nod_id

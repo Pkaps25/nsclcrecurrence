@@ -7,4 +7,4 @@ logs/
 xnat.cfg
 *csv
 ct_lung_class/*csv
-ct_lng_class/models/
+ct_lng_class/models

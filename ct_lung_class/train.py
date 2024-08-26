@@ -15,7 +15,7 @@ from constants import (
     METRICS_PRED_NDX,
     METRICS_SIZE,
 )
-from datatsets_peter import NoduleInfoTuple
+from image import NoduleInfoTuple
 from datasets import DatasetItem, NoduleDataset, getNoduleInfoList
 from model import NoduleRecurrenceClassifier
 from torch.optim import SGD
