@@ -4,3 +4,7 @@ data-unversioned
 *.pth
 logs/
 *.png
+xnat.cfg
+*csv
+ct_lung_class/*csv
+ct_lng_class/models

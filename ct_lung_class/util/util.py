@@ -63,8 +63,7 @@ def prhist(ary, prefix_str=None, **kwargs):
 
     count_ary, bins_ary = np.histogram(ary, **kwargs)
     for i in range(count_ary.shape[0]):
-        print("{}{:-8.2f}".format(prefix_str,
-              bins_ary[i]), "{:-10}".format(count_ary[i]))
+        print("{}{:-8.2f}".format(prefix_str, bins_ary[i]), "{:-10}".format(count_ary[i]))
     print("{}{:-8.2f}".format(prefix_str, bins_ary[-1]))
 
 
@@ -139,8 +138,7 @@ def enumerateWithEstimate(
         if current_ndx == print_ndx:
             # ... <1>
             duration_sec = (
-                (time.time() - start_ts) / (current_ndx -
-                                            start_ndx + 1) * (iter_len - start_ndx)
+                (time.time() - start_ts) / (current_ndx - start_ndx + 1) * (iter_len - start_ndx)
             )
 
             done_dt = datetime.datetime.fromtimestamp(start_ts + duration_sec)
