@@ -54,34 +54,37 @@ class NoduleTrainingApp:
 
         self.tag = self.cli_args.tag
         self.use_cuda = torch.cuda.is_available()
-        self.device = torch.device("cuda:3" if self.use_cuda else "cpu")
+        self.device = torch.device(f"cuda:{self.cli_args.device}" if self.use_cuda else "cpu")
         self.logger = logging.getLogger(__name__)
         self.cross_validate = True if self.cli_args.k_folds > 1 else False
         self.nodule_info_list = getNoduleInfoList()
         random.shuffle(self.nodule_info_list)
         if self.cross_validate:
             self.k_fold_splits = self.generate_k_folds(self.cli_args.k_folds)
-        
+
     def generate_k_folds(self, n_splits: int):
         nodules = [[nod] for nod in self.nodule_info_list]
         kfold = KFold(n_splits=n_splits, shuffle=True)
         return kfold.split(nodules)
-    
+
     def _train_test_split(
-        self, 
-        nodules: List[NoduleInfoTuple], 
+        self,
+        nodules: List[NoduleInfoTuple],
         test_ratio: float,
+        stratify: bool = False,
     ) -> Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]:
         nods = [[nod] for nod in nodules]
-        labels = [nod.is_nodule for nod in nodules]
-        x_train, x_test = train_test_split(nods, test_size=test_ratio)
+        kwargs = {"test_size": test_ratio}
+        if stratify:
+            labels = [nod.is_nodule for nod in nodules]
+            kwargs["stratify"] = labels
+        x_train, x_test = train_test_split(nods, **kwargs)
         return list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
-            
-        
+
     def init_model(self) -> torch.nn.Module:
         # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
         model = NoduleRecurrenceClassifier(
-           dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2
+            dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2
         )
         # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
 
@@ -90,7 +93,7 @@ class NoduleTrainingApp:
             model_blocks = [
                 n for n, subm in model.named_children() if len(list(subm.parameters())) > 0
             ]
-            finetune_blocks = model_blocks[-self.cli_args.finetune_depth :]
+            finetune_blocks = model_blocks[-self.cli_args.finetune_depth:]
             model.load_state_dict(
                 {
                     k: v
@@ -124,14 +127,14 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
-            drop_last=True,
-            shuffle=True
+            drop_last=False,
+            shuffle=True,
         )
 
         return train_dl
 
     def init_val_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
-        
+
         val_ds = NoduleDataset(
             nodule_info_list=nodule_list,
             isValSet_bool=True,
@@ -142,8 +145,8 @@ class NoduleTrainingApp:
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
-            drop_last=True,
-            shuffle=True
+            drop_last=False,
+            shuffle=True,
         )
 
         return val_dl
@@ -159,12 +162,16 @@ class NoduleTrainingApp:
         log_file = os.path.join(LOG_DIR, self.run_dir)
         file_handler = logging.FileHandler(log_file)
         self.logger.addHandler(file_handler)
-        
+
     def assert_no_leak(self, train_dl, val_dl):
-        trains = set(f"{nod.file_path}{nod.center_lps}" for nod in train_dl.dataset.noduleInfo_list)
+        trains = set(
+            f"{nod.file_path}{nod.center_lps}" for nod in train_dl.dataset.noduleInfo_list
+        )
         vals = set(f"{nod.file_path}{nod.center_lps}" for nod in val_dl.dataset.noduleInfo_list)
         assert len(vals.intersection(trains)) == 0, "Data leak, overlapping train and val samples"
-        assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) == len(self.nodule_info_list), "Using all samples in dataset"
+        assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) == len(
+            self.nodule_info_list
+        ), "Using all samples in dataset"
 
     def main(self, *args):
         self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
@@ -176,24 +183,26 @@ class NoduleTrainingApp:
         self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_{self.tag}")
         self.init_logs_outputs()
 
-        train_set, test_set = self._train_test_split(self.nodule_info_list, self.cli_args.val_ratio)
+        train_set, test_set = self._train_test_split(
+            self.nodule_info_list, self.cli_args.val_ratio
+        )
         if not self.cross_validate:
             train_dl = self.init_train_dataloader(train_set)
             val_dl = self.init_val_dataloader(test_set)
             self.assert_no_leak(train_dl, val_dl)
             self.train(train_dl, val_dl)
-            return 
-        
+            return
+
         # """ K FOLD VALIDATION"""
         # for split_idx, (train_idx, val_idx) in enumerate(self.k_fold_splits):
         #     self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log/split_{split_idx}"
         #     if not os.path.exists(os.path.join(OUTPUT_PATH, self.run_dir)):
         #         os.mkdir(os.path.join(OUTPUT_PATH, self.run_dir))
-            
+
         #     self.logger.info(f"Starting cross validation split {split_idx}")
         #     self.model = self.init_model()
         #     self.optimizer = self.init_optimizer()
-            
+
         #     train_dl = self.init_train_dataloader(train_idx=train_idx)
         #     val_dl = self.init_val_dataloader(val_idx=val_idx)
         #     self.train(train_dl, val_dl)
@@ -217,7 +226,7 @@ class NoduleTrainingApp:
             val_f1 = it_val_metric["pr/f1_score"]
             val_accuracy = it_val_metric["correct/all"]
             val_loss = it_val_metric["loss/all"]
-            
+
             # if val_f1 > best_f1:  # best val F1
             #     best_f1 = val_f1
             #     torch.save(
@@ -248,7 +257,7 @@ class NoduleTrainingApp:
             #         },
             #         os.path.join(OUTPUT_PATH, self.run_dir, "best_loss_model.pth"),
             #     )
-                
+
     def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
         self.model.train()
         train_dl.dataset.shuffleSamples()
@@ -308,17 +317,17 @@ class NoduleTrainingApp:
     def compute_batch_loss(
         self, batch_ndx: int, batch_tup: DatasetItem, batch_size: int, metrics_g: torch.Tensor
     ) -> torch.Tensor:
-        input_t, label_t, _,  = batch_tup
+        (
+            input_t,
+            label_t,
+            _,
+        ) = batch_tup
 
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
 
         logits_g = self.model(input_g)
-        foo = (
-            np.exp(logits_g.detach().cpu().numpy())
-            / np.exp(logits_g.detach().cpu().numpy()).sum(1)[:, None]
-        )
-        probability_g = torch.tensor(foo)
+        probability_g = torch.softmax(logits_g, dim=1)
         # probability_g=torch.exp(logits_g)/torch.sum(torch.exp(logits_g), 1)[:, None]
 
         # HINGE LOSS
@@ -426,11 +435,11 @@ class NoduleTrainingApp:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    mp.set_start_method('spawn')
+    mp.set_start_method("spawn")
     parser.add_argument(
         "--batch-size",
         help="Batch size to use for training",
-        default=8,
+        default=32,
         type=int,
     )
     parser.add_argument(
@@ -500,22 +509,10 @@ if __name__ == "__main__":
         default=1,
     )
     parser.add_argument(
-        "--k-folds",
-        help="Number of cross-validation folds.",
-        type=int,
-        default=1,
-        required=False
+        "--k-folds", help="Number of cross-validation folds.", type=int, default=1, required=False
     )
-    parser.add_argument(
-        "--tag",
-        required=True,
-        help="Tag string for logging"
-    )
-    parser.add_argument(
-        "--val-ratio",
-        required=False,
-        type=float,
-        default=0.25
-    )
+    parser.add_argument("--device", required=True, type=int)
+    parser.add_argument("--tag", required=True, help="Tag string for logging")
+    parser.add_argument("--val-ratio", required=False, type=float, default=0.25)
     cli_args = parser.parse_args()
     NoduleTrainingApp(cli_args).main()

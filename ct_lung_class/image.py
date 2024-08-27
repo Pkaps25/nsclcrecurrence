@@ -12,6 +12,7 @@ import numpy as np
 from lungmask import LMInferer
 import torchio as tio
 import numpy.typing
+from abc import ABC
 
 
 EXCLUDE_NODULE_FILES = [
@@ -32,6 +33,101 @@ EXCLUDE_NODULE_FILES = [
     "/data/etay/lung_hist_dat/original_dat_nrrds/nod144.nrrd",
     "/data/etay/lung_hist_dat/original_dat_nrrds/nod173.nrrd",
     "/data/etay/lung_hist_dat/original_dat_nrrds/nod178.nrrd",
+] + [
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_2",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_4",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_11",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_12",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_48",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_75",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_76",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_77",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_78",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_81",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_85",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_89",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_90",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_93",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_101",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_103",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_108",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_112",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_131",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_132",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_133",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_150",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_151",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_154",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_156",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_158",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_164",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_174",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_186",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_191",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_198",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_200",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_206",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_207",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_218",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_220",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_221",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_222",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_233",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_237",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_250",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_253",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_254",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_257",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_262",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_264",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_271",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_276",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_277",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_286",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_294",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_296",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_301",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_304",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_315",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_316",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_317",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_320",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_325",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_348",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_357",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_358",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_366",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_377",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_380",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_385",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_386",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_397",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_401",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_402",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_406",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_414",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_420",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_424",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_429",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_435",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_438",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_439",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_442",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_444",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_446",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_448",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_449",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_450",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_454",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_461",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_463",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_467",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_468",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_469",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_483",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_488",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_492",
+    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_498",
 ]
 
 
@@ -82,20 +178,20 @@ class NoduleImage:
     def _image(self):
         raise NotImplementedError("Subclasses must override")
 
-    def _get_3d_slice(self, center: Coord3D, dims: Coord3D) -> Slice3D:
-        index = self.image.TransformPhysicalPointToIndex(center)
-        size_x, size_y, size_z = dims
+    # def _get_3d_slice(self, center: Coord3D, dims: Coord3D) -> Slice3D:
+    #     index = self.image.TransformPhysicalPointToIndex(center)
+    #     size_x, size_y, size_z = dims
 
-        start_x = int(max(0, index[0] - size_x // 2))
-        end_x = int(min(self.image.GetWidth(), index[0] + size_x // 2))
+    #     start_x = int(max(0, index[0] - size_x // 2))
+    #     end_x = int(min(self.image.GetWidth(), index[0] + size_x // 2))
 
-        start_y = int(max(0, index[1] - size_y // 2))
-        end_y = int(min(self.image.GetHeight(), index[1] + size_y // 2))
+    #     start_y = int(max(0, index[1] - size_y // 2))
+    #     end_y = int(min(self.image.GetHeight(), index[1] + size_y // 2))
 
-        start_z = int(max(0, abs(index[2]) - size_z // 2))
-        end_z = int(min(self.image.GetDepth(), abs(index[2]) + size_z // 2))
+    #     start_z = int(max(0, abs(index[2]) - size_z // 2))
+    #     end_z = int(min(self.image.GetDepth(), abs(index[2]) + size_z // 2))
 
-        return slice(start_z, end_z), slice(start_y, end_y), slice(start_x, end_x)
+    #     return slice(start_z, end_z), slice(start_y, end_y), slice(start_x, end_x)
 
     def lung_segmentation(self) -> Image:
         inferrer = LMInferer(tqdm_disable=True)
@@ -104,7 +200,7 @@ class NoduleImage:
         return mask
 
     def nodule_segmentation_image(self) -> sitk.Image:
-        raise NotImplemented("Must override this method!")
+        raise NotImplementedError("Must override this method!")
 
     # def image_array(self, preprocess) -> Image:
     #     image_arr = sitk.GetArrayFromImage(self.image)
@@ -132,20 +228,16 @@ class NoduleImage:
     #     # return sliced_arr
 
     def get_connected_component_id_for_nodule(self, labeled_segmentation_image: sitk.Image) -> int:
-        index = labeled_segmentation_image.TransformPhysicalPointToIndex(
-            self.center_lps)
+        index = labeled_segmentation_image.TransformPhysicalPointToIndex(self.center_lps)
         index_box = [slice(x - 10, x + 10) for x in index]
-        center_box = sitk.GetArrayFromImage(
-            labeled_segmentation_image[index_box])
+        center_box = sitk.GetArrayFromImage(labeled_segmentation_image[index_box])
         segs = np.unique(center_box)
         return int(np.max(segs))
 
     def extract_bounding_box_nodule(self, preprocess: bool, dilation_mm: int) -> sitk.Image:
         segmentation_image = self.nodule_segmentation_image()
-        labeled_segmentation_image = sitk.ConnectedComponent(
-            segmentation_image)
-        segmentation_id = self.get_connected_component_id_for_nodule(
-            labeled_segmentation_image)
+        labeled_segmentation_image = sitk.ConnectedComponent(segmentation_image)
+        segmentation_id = self.get_connected_component_id_for_nodule(labeled_segmentation_image)
 
         label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
         subset_segmentation = sitk.BinaryThreshold(
@@ -194,8 +286,7 @@ class NRRDNodule(NoduleImage):
         return reader.Execute()
 
     def nodule_segmentation_image(self) -> sitk.Image:
-        nod_id = os.path.basename(self.image_file_path).split("nod")[
-            1].split(".")[0]
+        nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
         seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
         return sitk.ReadImage(seg_file)
 
@@ -252,8 +343,7 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
                 center = get_coord_csv(row[4], row[5], row[6])
                 label = int(row[7])
                 nodule_infos.append(
-                    NoduleInfoTuple(label, nod_name, center,
-                                    file_path, NRRDNodule)
+                    NoduleInfoTuple(label, nod_name, center, file_path, NRRDNodule)
                 )
 
         return nodule_infos
@@ -264,11 +354,11 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
         coord_file = "/home/kaplinsp/annots_michelle_label.csv"
         nodule_infos = []
 
-        with open(
-            "/home/kaplinsp/ct_lung_class/ct_lung_class/exclude_michelle.csv", "r"
-        ) as excludefile:
-            exclude = [line.strip() for line in excludefile]
-        exclude += read_pickle("/data/kaplinsp/exclude_prasad.p")
+        # with open(
+        #     "/home/kaplinsp/ct_lung_class/ct_lung_class/exclude_michelle.csv", "r"
+        # ) as excludefile:
+        #     exclude = [line.strip() for line in excludefile]
+        # exclude += read_pickle("/data/kaplinsp/exclude_prasad.p")
 
         with open(coord_file) as f:
             reader = csv.reader(f, delimiter=",", quoting=csv.QUOTE_MINIMAL)
@@ -276,9 +366,9 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
             for row in reader:
 
                 subject_id = row[3]
-                if subject_id in exclude:
-                    logger.warning(f"Skipping {subject_id}")
-                    continue
+                # if subject_id in exclude:
+                #     logger.warning(f"Skipping {subject_id}")
+                #     continue
                 try:
                     coords = ras_to_lps(np.array(literal_eval(row[8])))
                 except SyntaxError:
@@ -287,8 +377,7 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
 
                 file_path = f"/data/kaplinsp/prasad_d/{subject_id}"
                 nodule_infos.append(
-                    NoduleInfoTuple(
-                        int(row[-1]), subject_id, coords, file_path, DICOMNodule)
+                    NoduleInfoTuple(int(row[-1]), subject_id, coords, file_path, DICOMNodule)
                 )
 
         return nodule_infos
