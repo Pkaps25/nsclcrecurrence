@@ -1,5 +1,4 @@
 import copy
-import functools
 import math
 import random
 from typing import List, Optional, Tuple
@@ -7,7 +6,6 @@ import sys
 import SimpleITK as sitk
 
 import numpy as np
-import torchio as tio
 
 
 # import torchio as tio
@@ -84,8 +82,7 @@ def getCtRawNodule(
     log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
     # return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
-    raw_nodule = ct.extract_bounding_box_nodule(
-        preprocess=preprocess, dilation_mm=dilation)
+    raw_nodule = ct.extract_bounding_box_nodule(preprocess=preprocess, dilation_mm=dilation)
     resampled = resample_image(raw_nodule, resample_size)
     return sitk.GetArrayFromImage(resampled)
 
@@ -135,10 +132,8 @@ def slice_and_pad_segmentation(
             dilation,
         )
     sliced_seg = segmentation[slice_3d]
-    pad_width = [(0, max(0, box_dim[2 - i] - sliced_seg.shape[i]))
-                 for i in range(3)]
-    padded_arr = np.pad(sliced_seg, pad_width=pad_width,
-                        mode="constant", constant_values=0)
+    pad_width = [(0, max(0, box_dim[2 - i] - sliced_seg.shape[i])) for i in range(3)]
+    padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode="constant", constant_values=0)
     return padded_arr
 
 
@@ -167,15 +162,15 @@ def getCtAugmentedNodule(
             if random.random() > 0.5:
                 transform_t[i, i] *= -1
 
-        # if "offset" in augmentation_dict:
-        #     offset_float = augmentation_dict["offset"]
-        #     random_float = random.random() * 2 - 1
-        #     transform_t[i, 3] = offset_float * random_float
+        if "offset" in augmentation_dict:
+            offset_float = augmentation_dict["offset"]
+            random_float = random.random() * 2 - 1
+            transform_t[i, 3] = offset_float * random_float
 
-        # if "scale" in augmentation_dict:
-        #     scale_float = augmentation_dict["scale"]
-        #     random_float = random.random() * 2 - 1
-        #     transform_t[i, i] *= 1.0 + scale_float * random_float
+        if "scale" in augmentation_dict:
+            scale_float = augmentation_dict["scale"]
+            random_float = random.random() * 2 - 1
+            transform_t[i, i] *= 1.0 + scale_float * random_float
 
     if "rotate" in augmentation_dict:
         angle_rad = random.random() * math.pi * 2
@@ -233,8 +228,7 @@ class NoduleDataset(Dataset):
         else:
             raise Exception("Unknown sort: " + repr(sortby_str))
 
-        self.negative_list = [
-            nt for nt in self.noduleInfo_list if not nt.is_nodule]
+        self.negative_list = [nt for nt in self.noduleInfo_list if not nt.is_nodule]
 
         self.pos_list = [nt for nt in self.noduleInfo_list if nt.is_nodule]
 
@@ -263,8 +257,8 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup,
                 width_irc,
                 preprocess=True,
-                dilation=5,
-                resample_size=64,
+                dilation=6,
+                resample_size=128,
             )
         else:
             nodule_a = getCtRawNodule(
@@ -272,8 +266,8 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
                 preprocess=True,
-                dilation=5,
-                resample_size=64,
+                dilation=6,
+                resample_size=128,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
