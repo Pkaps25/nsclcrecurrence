@@ -1,133 +1,66 @@
+from abc import ABC, abstractmethod
 from ast import literal_eval
 import csv
 from dataclasses import dataclass
-import functools
 import logging
 import os
 import pickle
-import random
-from typing import Any, List, Optional, Tuple, Union
+from typing import List, Tuple, Union
 import SimpleITK as sitk
 import numpy as np
-from lungmask import LMInferer
-import torchio as tio
-import numpy.typing
-from abc import ABC
+
+[
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod5.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod8.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod15.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod32.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod33.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod42.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod76.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod82.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod89.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod98.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod130.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod131.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod138.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod139.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod147.nrrd",
+    "/data/etay/lung_hist_dat/original_dat_nrrds/nod185.nrrd",
+]
 
 
+# Manual segs fixed 8, 20, 32, 33, 130
 EXCLUDE_NODULE_FILES = [
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod11.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod20.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod24.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod26.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod44.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod61.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod63.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod69.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod77.nrrd"
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod80.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod86.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod103.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod128.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod129.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod144.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod173.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod178.nrrd",
-] + [
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_2",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_4",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_11",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_12",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_48",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_75",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_76",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_77",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_78",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_81",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_85",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_89",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_90",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_93",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_101",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_103",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_108",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_112",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_131",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_132",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_133",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_150",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_151",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_154",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_156",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_158",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_164",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_174",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_186",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_191",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_198",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_200",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_206",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_207",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_218",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_220",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_221",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_222",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_233",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_237",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_250",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_253",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_254",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_257",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_262",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_264",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_271",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_276",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_277",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_286",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_294",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_296",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_301",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_304",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_315",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_316",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_317",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_320",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_325",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_348",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_357",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_358",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_366",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_377",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_380",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_385",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_386",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_397",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_401",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_402",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_406",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_414",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_420",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_424",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_429",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_435",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_438",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_439",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_442",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_444",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_446",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_448",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_449",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_450",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_454",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_461",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_463",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_467",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_468",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_469",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_483",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_488",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_492",
-    "/data/kaplinsp/prasad_d/RIA_17-353D_Prasad_000_498",
+    (5, (68.5, 25.6, -52.8)),  # TODO need help
+    # (8, (104.4, 31.5, -105.0)), # fixed low confidence
+    (15, (72.4, 4.2, -73.8)),  # unable
+    # (20, (51.0, 32.6, -30.9)), # fixed low confidence
+    (24, (88.9, -153.8, -83.8)),  # TODO
+    # (26, (-76.1, 77.4, -126.0)), # fixed coordinate
+    # (32, (-105.6, -87.2, -204.4)), # fixed seg
+    (33, (-103.6, 41.3, -145.6)),  # fixed seg
+    (42, (-119.9, 36.6, -72.5)),  # TODO need help
+    (44, (-92.8, -34.3, -186.1)),  # TODO need help
+    (61, (-82.3, -4.6, 167.5)),  # bad image
+    (63, (-44.3, 44.4, -66.2)),  # TODO merge segmentations
+    # (69, (89.3, 76.9, -128.7)), # fixed coordinate
+    (76, (-28.8, 38.9, -68.8)),  # TODO need help
+    (82, (-38.2, 17.1, -211.2)),  # fixed seg
+    (84, (-64.6, 60.5, -114.5)),
+    (86, (36.5, 54.6, -124.0)),  # TODO check if z coordinate is actually I240
+    (89, (-86.5, -49.7, -114.0)),  # TODO No nodule
+    (98, (35.8, 45.9, -102.5)),  # TODO need help
+    (103, (112.6, 74.4, 2688.8)),  # bad image
+    (128, (113.4, 38.7, -72.5)),  # TODO need help
+    # (130, (-123.3, 55.5, -180.9)), # fixed seg
+    (131, (-107.7, 73.5, -137.5)),  # TODO need help
+    (138, (-96.8, 45.9, -145.0)),  # TODO need help
+    (139, (-32.5, 65.7, -111.2)),  # TODO need help
+    (144, (-79.9, 78.0, -142.5)),  # TODO need help
+    (147, (-59.7, 31.8, -40.6)),  # TODO need help
+    (173, (-91.0, 92.9, -181.8)),  # fixed seg, TODO need to merge
+    (178, (-51.9, 12.3, -42.5)),  # TODO need help
+    (185, (86.7, -153.3, 608.5)),  # TODO need help
 ]
 
 
@@ -159,7 +92,7 @@ def get_coord_csv(c1, c2, c3):
 Point = Union[int, float]
 Coord3D = Union[Tuple[Point, Point, Point], np.array]
 Slice3D = Tuple[slice, slice, slice]
-Image = np.typing.NDArray
+Image = np.ndarray
 
 CT_AIR, CT_BONE = -1000, 1000
 
@@ -170,62 +103,18 @@ def ras_to_lps(tup: np.array) -> np.array:
     return tup
 
 
-class NoduleImage:
+class NoduleImage(ABC):
     def __init__(self, image_file_path: str, center_lps: np.array):
         self.image_file_path = image_file_path
         self.center_lps = center_lps
 
-    def _image(self):
-        raise NotImplementedError("Subclasses must override")
+    @abstractmethod
+    def image(self):
+        pass
 
-    # def _get_3d_slice(self, center: Coord3D, dims: Coord3D) -> Slice3D:
-    #     index = self.image.TransformPhysicalPointToIndex(center)
-    #     size_x, size_y, size_z = dims
-
-    #     start_x = int(max(0, index[0] - size_x // 2))
-    #     end_x = int(min(self.image.GetWidth(), index[0] + size_x // 2))
-
-    #     start_y = int(max(0, index[1] - size_y // 2))
-    #     end_y = int(min(self.image.GetHeight(), index[1] + size_y // 2))
-
-    #     start_z = int(max(0, abs(index[2]) - size_z // 2))
-    #     end_z = int(min(self.image.GetDepth(), abs(index[2]) + size_z // 2))
-
-    #     return slice(start_z, end_z), slice(start_y, end_y), slice(start_x, end_x)
-
-    def lung_segmentation(self) -> Image:
-        inferrer = LMInferer(tqdm_disable=True)
-        mask = inferrer.apply(self.image_array())
-        mask[mask.nonzero()] = 1
-        return mask
-
+    @abstractmethod
     def nodule_segmentation_image(self) -> sitk.Image:
-        raise NotImplementedError("Must override this method!")
-
-    # def image_array(self, preprocess) -> Image:
-    #     image_arr = sitk.GetArrayFromImage(self.image)
-
-    #     if preprocess:
-    #         transforms = tio.Compose([
-    #             # tio.RescaleIntensity(out_min_max=(-1, 1), percentiles=(0.5, 99.5), in_min_max=(CT_AIR, CT_BONE))
-    #             tio.ZNormalization(),
-    #         ])
-    #         image_arr = transforms(np.expand_dims(image_arr, 0))[0]
-
-    #     return image_arr
-
-    # def nodule_slice(self, preprocess, box_dim: Coord3D = (60,60,60)) -> Tuple[Image, Slice3D]:
-    #     slice_3d = self._get_3d_slice(self.center_lps, box_dim)
-
-    #     image_array = self.image_array(preprocess=preprocess)
-
-    #     sliced_arr = image_array[slice_3d]
-    #     # logger.info(f"Slice shape {sliced_arr.shape} for nodule {self.image_file_path}")
-    #     pad_width = [(0, max(0, box_dim[2-i] - sliced_arr.shape[i])) for i in range(3)]
-    #     padded_arr = np.pad(sliced_arr, pad_width=pad_width, mode='constant', constant_values=0)
-    #     # logger.info(f"Padded shape {padded_arr.shape} for nodule {self.image_file_path}")
-    #     return padded_arr, slice_3d
-    #     # return sliced_arr
+        pass
 
     def get_connected_component_id_for_nodule(self, labeled_segmentation_image: sitk.Image) -> int:
         index = labeled_segmentation_image.TransformPhysicalPointToIndex(self.center_lps)
@@ -269,6 +158,7 @@ class NoduleImage:
         if preprocess:
             ct = sitk.Clamp(ct, ct.GetPixelIDValue(), CT_AIR, CT_BONE)
             ct = sitk.Normalize(ct)
+            ct = sitk.RescaleIntensity(ct, 0, 1)
 
         imgB_start_index = ct.TransformPhysicalPointToIndex(box_start)
         imgB_end_index = ct.TransformPhysicalPointToIndex(box_end)
@@ -280,10 +170,7 @@ class NRRDNodule(NoduleImage):
 
     @property
     def image(self) -> sitk.Image:
-        reader = sitk.ImageFileReader()
-        reader.SetImageIO("NrrdImageIO")
-        reader.SetFileName(self.image_file_path)
-        return reader.Execute()
+        return sitk.ReadImage(self.image_file_path)
 
     def nodule_segmentation_image(self) -> sitk.Image:
         nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
@@ -326,7 +213,7 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
     def generate_nodule_info() -> List[NoduleInfoTuple]:
         coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations.csv"
         # ids_to_exclude = set(["103", "128", "20", "26", "29", "69", "61"])
-        exclude_ids = read_pickle("/data/kaplinsp/exclude_r17.p")
+        # exclude_ids = read_pickle("/data/kaplinsp/exclude_r17.p")
 
         nodule_infos = []
 
@@ -336,11 +223,11 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
             for row in reader:
                 nod_name = row[0]
                 file_path = f"/data/etay/lung_hist_dat/original_dat_nrrds/nod{nod_name}.nrrd"
-                if file_path in EXCLUDE_NODULE_FILES:
+                center = get_coord_csv(row[4], row[5], row[6])
+                if (int(nod_name), center) in EXCLUDE_NODULE_FILES:
                     logger.info(f"EXCLUDING: {nod_name}")
                     continue
 
-                center = get_coord_csv(row[4], row[5], row[6])
                 label = int(row[7])
                 nodule_infos.append(
                     NoduleInfoTuple(label, nod_name, center, file_path, NRRDNodule)

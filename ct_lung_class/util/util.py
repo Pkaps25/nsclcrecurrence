@@ -1,12 +1,13 @@
 import collections
 import datetime
 import time
+from typing import Any
 
 import numpy as np
 from util.logconf import logging
 
 log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.CRITICAL)
 
 IrcTuple = collections.namedtuple("IrcTuple", ["index", "row", "col"])
 XyzTuple = collections.namedtuple("XyzTuple", ["x", "y", "z"])
@@ -33,26 +34,12 @@ def xyz2irc(
     return IrcTuple(int(cri_a[2]), int(cri_a[1]), int(cri_a[0]))
 
 
-def importstr(module_str, from_=None):
-    """
-    >>> importstr('os')
-    <module 'os' from '.../os.pyc'>
-    >>> importstr('math', 'fabs')
-    <built-in function fabs>
-    """
-    if from_ is None and ":" in module_str:
-        module_str, from_ = module_str.rsplit(":")
-
-    module = __import__(module_str)
-    for sub_str in module_str.split(".")[1:]:
-        module = getattr(module, sub_str)
-
-    if from_:
-        try:
-            return getattr(module, from_)
-        except AttributeError:
-            raise ImportError(f"{module_str}.{from_}")
-    return module
+def importstr(name: str) -> Any:
+    components = name.split(".")
+    mod = __import__(components[0])
+    for comp in components[1:]:
+        mod = getattr(mod, comp)
+    return mod
 
 
 def prhist(ary, prefix_str=None, **kwargs):
@@ -145,7 +132,8 @@ def enumerateWithEstimate(
             done_td = datetime.timedelta(seconds=duration_sec)
 
             log.info(
-                f"{desc_str} {current_ndx}/{iter_len}, done at {str(done_dt).rsplit('.', 1)[0]}, {str(done_td).rsplit('.', 1)[0]}"
+                f"{desc_str} {current_ndx}/{iter_len}, done at {str(done_dt).rsplit('.', 1)[0]},"
+                f"{str(done_td).rsplit('.', 1)[0]}"
             )
 
             print_ndx *= backoff

@@ -3,7 +3,8 @@ import itertools
 import os
 from datetime import datetime
 import random
-from typing import List, Optional, Tuple
+import sys
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -17,11 +18,10 @@ from constants import (
 )
 from image import NoduleInfoTuple
 from datasets import DatasetItem, NoduleDataset, getNoduleInfoList
-from model import NoduleRecurrenceClassifier
 from torch.optim import SGD
 from torch.utils.data import DataLoader
 from util.logconf import logging
-from util.util import enumerateWithEstimate
+from util.util import enumerateWithEstimate, importstr
 from sklearn.model_selection import KFold, train_test_split
 from torch.utils.tensorboard import SummaryWriter
 
@@ -29,7 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
 OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.CRITICAL)
 world_size = torch.cuda.device_count()
 
 
@@ -40,17 +40,10 @@ class NoduleTrainingApp:
 
         self.totalTrainingSamples_count = 0
 
-        self.augmentation_dict = {}
-        if self.cli_args.augmented or self.cli_args.augment_flip:
-            self.augmentation_dict["flip"] = True
-        if self.cli_args.augmented or self.cli_args.augment_offset:
-            self.augmentation_dict["offset"] = 0.1
-        if self.cli_args.augmented or self.cli_args.augment_scale:
-            self.augmentation_dict["scale"] = 0.2
-        if self.cli_args.augmented or self.cli_args.augment_rotate:
-            self.augmentation_dict["rotate"] = True
-        if self.cli_args.augmented or self.cli_args.augment_noise:
-            self.augmentation_dict["noise"] = 25.0
+        self.augmentation_dict = {
+            augmentation: getattr(self.cli_args, augmentation)
+            for augmentation in ["affine_prob", "translate", "scale", "padding"]
+        }
 
         self.tag = self.cli_args.tag
         self.use_cuda = torch.cuda.is_available()
@@ -81,12 +74,9 @@ class NoduleTrainingApp:
         x_train, x_test = train_test_split(nods, **kwargs)
         return list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
 
-    def init_model(self) -> torch.nn.Module:
-        # model = monai.networks.nets.DenseNet(dropout_prob=0.5,spatial_dims=3,in_channels=1,out_channels=2, block_config=(3, 4, 8, 6))
-        model = NoduleRecurrenceClassifier(
-            dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2
-        )
-        # model = monai.networks.nets.ResNet(block="basic", layers=(3,4,6,3), block_inplanes=(64, 32, 16, 8), num_classes=2, n_input_channels=1)
+    def init_model(self, model_path: str) -> torch.nn.Module:
+        model_cls = importstr(model_path)
+        model = model_cls(dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2)
 
         if self.cli_args.finetune:
             d = torch.load(self.cli_args.finetune, map_location="cpu")
@@ -111,15 +101,19 @@ class NoduleTrainingApp:
 
         return model
 
-    def init_optimizer(self) -> torch.optim.Optimizer:
+    def init_optimizer(
+        self, learn_rate: float, momentum: float, l2_reg: float
+    ) -> torch.optim.Optimizer:
         # return SGD(self.model.parameters(),lr=lr, weight_decay=1e-4)
-        return SGD(self.model.parameters(), lr=0.001, momentum=0.99, weight_decay=1e-4)
+        return SGD(self.model.parameters(), lr=learn_rate, momentum=momentum, weight_decay=l2_reg)
 
     def init_train_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
         train_ds = NoduleDataset(
             nodule_info_list=nodule_list,
             isValSet_bool=False,
             augmentation_dict=self.augmentation_dict,
+            dilate=self.cli_args.dilate,
+            resample=self.cli_args.resample,
         )
 
         train_dl = DataLoader(
@@ -138,6 +132,8 @@ class NoduleTrainingApp:
         val_ds = NoduleDataset(
             nodule_info_list=nodule_list,
             isValSet_bool=True,
+            dilate=self.cli_args.dilate,
+            resample=self.cli_args.resample,
         )
 
         val_dl = DataLoader(
@@ -176,11 +172,16 @@ class NoduleTrainingApp:
     def main(self, *args):
         self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
 
-        self.model = self.init_model()
-        self.optimizer = self.init_optimizer()
+        self.model = self.init_model(self.cli_args.model)
+        self.optimizer = self.init_optimizer(
+            self.cli_args.learn_rate, self.cli_args.momentum, self.cli_args.weight_decay
+        )
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
-        self.writer = SummaryWriter(f"/data/kaplinsp/runs/{self.time_str}_{self.tag}")
+        executed = " ".join(sys.argv)
+        self.writer = SummaryWriter(
+            f"/data/kaplinsp/tensorboard/grid-search-params/{self.time_str}_{self.tag}_{executed}"
+        )
         self.init_logs_outputs()
 
         train_set, test_set = self._train_test_split(
@@ -208,24 +209,26 @@ class NoduleTrainingApp:
         #     self.train(train_dl, val_dl)
 
     def train(self, train_dl, val_dl):
-        best_f1 = -1
-        best_accuracy = -1
-        best_loss = float("inf")
+        # best_f1 = -1
+        # best_accuracy = -1
+        # best_loss = float("inf")
         for epoch_ndx in range(1, self.cli_args.epochs + 1):
 
             self.logger.info(
-                f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} batches of size {self.cli_args.batch_size}"
+                f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} "
+                f"batches of size {self.cli_args.batch_size}"
             )
 
             trnMetrics_t = self.train_epoch(epoch_ndx, train_dl)
             self.log_metrics(epoch_ndx, "train", trnMetrics_t)
 
             valMetrics_t = self.validate(epoch_ndx, val_dl)
-            it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
+            self.log_metrics(epoch_ndx, "val", valMetrics_t)
+            # it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
 
-            val_f1 = it_val_metric["pr/f1_score"]
-            val_accuracy = it_val_metric["correct/all"]
-            val_loss = it_val_metric["loss/all"]
+            # val_f1 = it_val_metric["pr/f1_score"]
+            # val_accuracy = it_val_metric["correct/all"]
+            # val_loss = it_val_metric["loss/all"]
 
             # if val_f1 > best_f1:  # best val F1
             #     best_f1 = val_f1
@@ -282,8 +285,9 @@ class NoduleTrainingApp:
                 train_dl.batch_size,
                 train_metrics,
             )
-
+            # loss_var.clip(1e-6)
             loss_var.backward()
+            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1e-6)
             self.optimizer.step()
 
         self.totalTrainingSamples_count += len(train_dl.dataset)
@@ -377,18 +381,29 @@ class NoduleTrainingApp:
         metrics_dict["loss/neg"] = metrics[METRICS_LOSS_NDX, negative_label_mask].mean()
         metrics_dict["loss/pos"] = metrics[METRICS_LOSS_NDX, positive_label_mask].mean()
 
-        metrics_dict["correct/all"] = (pos_correct + neg_correct) / metrics.shape[1] * 100
-        metrics_dict["correct/neg"] = (neg_correct) / neg_count * 100
-        metrics_dict["correct/pos"] = (pos_correct) / pos_count * 100
-
-        precision = metrics_dict["pr/precision"] = true_positive_count / np.float32(
-            true_positive_count + false_positive_count
+        metrics_dict["correct/all"] = np.divide(
+            (pos_correct + neg_correct) * 100, metrics.shape[1], where=metrics.shape[1] != 0
         )
-        recall = metrics_dict["pr/recall"] = true_positive_count / np.float32(
-            true_positive_count + false_negative_count
-        )
+        metrics_dict["correct/neg"] = np.divide(neg_correct * 100, neg_count, where=neg_count != 0)
+        metrics_dict["correct/pos"] = np.divide(pos_correct * 100, pos_count, where=pos_count != 0)
 
-        metrics_dict["pr/f1_score"] = 2 * (precision * recall) / (precision + recall)
+        precision = np.divide(
+            true_positive_count,
+            true_positive_count + false_positive_count,
+            where=(true_positive_count + false_positive_count) != 0,
+        )
+        metrics_dict["pr/precision"] = precision
+
+        recall = np.divide(
+            true_positive_count,
+            true_positive_count + false_negative_count,
+            where=(true_positive_count + false_negative_count) != 0,
+        )
+        metrics_dict["pr/recall"] = recall
+
+        metrics_dict["pr/f1_score"] = np.divide(
+            2 * (precision * recall), precision + recall, where=(precision + recall) != 0
+        )
 
         self.logger.info(
             (
@@ -461,41 +476,17 @@ if __name__ == "__main__":
         default=False,
     )
     parser.add_argument(
-        "--augmented",
-        help="Augment the training data.",
-        action="store_true",
-        default=False,
+        "--affine-prob", help="Probability of affine transform", type=float, default=0.75
     )
+    parser.add_argument("--translate", help="translation amount", type=int, default=15)
+    parser.add_argument("--scale", help="scale amount", type=float, default=0.15)
+    parser.add_argument("--padding", help="augmentation padding mode", default="border")
     parser.add_argument(
-        "--augment-flip",
-        help="Augment the training data by randomly flipping the data left-right, up-down, and front-back.",
-        action="store_true",
-        default=False,
+        "--dilate",
+        type=int,
+        help="Dilation in MM",
     )
-    parser.add_argument(
-        "--augment-offset",
-        help="Augment the training data by randomly offsetting the data slightly along the X and Y axes.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-scale",
-        help="Augment the training data by randomly increasing or decreasing the size of the candidate.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-rotate",
-        help="Augment the training data by randomly rotating the data around the head-foot axis.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--augment-noise",
-        help="Augment the training data by randomly adding noise to the data.",
-        action="store_true",
-        default=False,
-    )
+    parser.add_argument("--resample", type=int, help="resample size")
     parser.add_argument(
         "--finetune",
         help="Start finetuning from this model.",
@@ -511,8 +502,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--k-folds", help="Number of cross-validation folds.", type=int, default=1, required=False
     )
+    parser.add_argument("--learn-rate", help="Learn rate", type=float, default=1e-3)
+    parser.add_argument("--momentum", type=float, default=0.99)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--device", required=True, type=int)
-    parser.add_argument("--tag", required=True, help="Tag string for logging")
+    parser.add_argument("--tag", required=False, default="", help="Tag string for logging")
     parser.add_argument("--val-ratio", required=False, type=float, default=0.25)
     cli_args = parser.parse_args()
     NoduleTrainingApp(cli_args).main()

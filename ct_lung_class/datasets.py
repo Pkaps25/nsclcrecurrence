@@ -2,24 +2,17 @@ import copy
 import math
 import random
 from typing import List, Optional, Tuple
-import sys
 import SimpleITK as sitk
 
-import numpy as np
-
-
-# import torchio as tio
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from monai.transforms import Compose, RandAffine, RandFlip, RandGaussianNoise
 import numpy as np
-import numpy.typing
 
-# from transforms import RandomCrop
 from image import (
     Coord3D,
     NoduleInfoGenerator,
-    PrasadSampleGeneratoryStrategy,
     R17SampleGeneratorStrategy,
     NoduleImage,
     NoduleInfoTuple,
@@ -30,10 +23,8 @@ from util.disk import getCache
 from util.logconf import logging
 from util.util import IrcTuple
 
-# DATA_DIR = os.getenv("DATA_DIR")
-
 log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.CRITICAL)
 
 
 image_cache = getCache("image_slices")
@@ -138,7 +129,7 @@ def slice_and_pad_segmentation(
 
 
 def getCtAugmentedNodule(
-    augmentation_dict: Optional[dict],
+    augmentation_dict: dict,
     noduleInfoTup: NoduleInfoTuple,
     width_irc: IrcTuple,
     preprocess: bool,
@@ -153,6 +144,18 @@ def getCtAugmentedNodule(
         dilation=dilation,
         resample_size=resample_size,
     )
+    rand_affine = RandAffine(
+        mode=("bilinear"),
+        prob=augmentation_dict["affine_prob"],
+        translate_range=[augmentation_dict["translate"]] * 3,
+        rotate_range=(np.pi / 6, np.pi / 6, np.pi / 4),
+        scale_range=[augmentation_dict["scale"] * 3],
+        padding_mode=augmentation_dict["padding"],
+    )
+    transform = Compose([rand_affine, RandFlip(), RandGaussianNoise()])
+    ct_t = torch.tensor(transform(ct_chunk)).unsqueeze(0).to(torch.float32)
+    return ct_t
+    # return torch.tensor(ct_chunk).unsqueeze(0).to(torch.float32)
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
 
     transform_t = torch.eye(4)
@@ -214,12 +217,16 @@ class NoduleDataset(Dataset):
     def __init__(
         self,
         nodule_info_list,
+        dilate,
+        resample,
         isValSet_bool=None,
         sortby_str="random",
         augmentation_dict=None,
     ):
         self.augmentation_dict = augmentation_dict
         self.noduleInfo_list = copy.copy(nodule_info_list)
+        self.dilate = dilate
+        self.resample = resample
 
         if sortby_str == "random":
             random.shuffle(self.noduleInfo_list)
@@ -257,8 +264,8 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup,
                 width_irc,
                 preprocess=True,
-                dilation=6,
-                resample_size=128,
+                dilation=self.dilate,
+                resample_size=self.resample,
             )
         else:
             nodule_a = getCtRawNodule(
@@ -266,8 +273,8 @@ class NoduleDataset(Dataset):
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
                 preprocess=True,
-                dilation=6,
-                resample_size=128,
+                dilation=self.dilate,
+                resample_size=self.resample,
             )
             nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
             nodule_t = nodule_t.unsqueeze(0)
@@ -276,5 +283,5 @@ class NoduleDataset(Dataset):
             [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
             dtype=torch.long,
         )
-
+        assert not torch.any(torch.isnan(nodule_t)), noduleInfo_tup.file_path
         return nodule_t, pos_t, noduleInfo_tup.nod_id
