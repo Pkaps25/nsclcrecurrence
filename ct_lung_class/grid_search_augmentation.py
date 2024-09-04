@@ -1,16 +1,16 @@
 import itertools
-import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 
 
 # Define the different argument values as lists
 epochs = [2000]
-batch_size = [8, 16]
-affine_prob = [0.75, 0.5]  # Example of varying affine-prob
-translate = [8, 15]  # Example of varying translate
-scale = [0.1, 0.15]
-dilate = [3, 10]
+batch_size = [16]
+affine_prob = [0.75]  # Example of varying affine-prob
+translate = [12]  # Example of varying translate
+scale = [0.12]
+# dilate = [3, 6, 10]
+dilate = [6]
 resample = [64]
 val_ratio = [0.2]
 padding = ["border"]
@@ -51,10 +51,12 @@ def run_command(combo, device):
         str(combo[8]),
         "--device",
         str(device),
+        "--model",
+        "monai.networks.nets.densenet121",
     ]
 
     print(f"Running command: {' '.join(cmd)}")
-    subprocess.run(cmd)
+    # subprocess.run(cmd)
 
 
 with ProcessPoolExecutor(max_workers=8) as executor:

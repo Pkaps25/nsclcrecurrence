@@ -6,13 +6,11 @@ from tqdm import tqdm
 
 # Define the different argument values as lists
 learn_rate = [0.001, 0.0001]
-momentum = [0.90, 0.99]
-l2 = [1e-4, 1e-3]
-model = ["monai.networks.nets.densenet121", "monai.networks.nets.densenet169"]
+model = ["monai.networks.nets.densenet169", "monai.networks.nets.densenet121"]
 devices = list(range(4))
-
+padding = ["border", "zeros"]
 # Use itertools.product to generate all combinations of arguments
-combinations = list(itertools.product(learn_rate, momentum, l2, model))
+combinations = list(itertools.product(learn_rate, model, padding))
 
 # Iterate over each combination and spawn the process
 
@@ -22,7 +20,7 @@ def run_command(combo, device):
         "python",
         "ct_lung_class/train.py",
         "--epochs",
-        "3000",
+        "10000",
         "--batch-size",
         "16",
         "--affine-prob",
@@ -30,7 +28,7 @@ def run_command(combo, device):
         "--translate",
         "10",
         "--scale",
-        "0.12",
+        "0.15",
         "--dilate",
         "10",
         "--resample",
@@ -38,17 +36,17 @@ def run_command(combo, device):
         "--val-ratio",
         "0.2",
         "--padding",
-        "border",
+        str(combo[2]),
         "--device",
         str(device),
         "--learn-rate",
         str(combo[0]),
         "--momentum",
-        str(combo[1]),
+        "0.99",
         "--weight-decay",
-        str(combo[2]),
+        "0.001",
         "--model",
-        str(combo[3]),
+        str(combo[1]),
     ]
 
     print(f"Running command: {' '.join(cmd)}")

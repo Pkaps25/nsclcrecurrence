@@ -153,7 +153,7 @@ def getCtAugmentedNodule(
         padding_mode=augmentation_dict["padding"],
     )
     transform = Compose([rand_affine, RandFlip(), RandGaussianNoise()])
-    ct_t = torch.tensor(transform(ct_chunk)).unsqueeze(0).to(torch.float32)
+    ct_t = transform(ct_chunk).unsqueeze(0).to(torch.float32)
     return ct_t
     # return torch.tensor(ct_chunk).unsqueeze(0).to(torch.float32)
     ct_t = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)

@@ -83,7 +83,7 @@ class NoduleTrainingApp:
             model_blocks = [
                 n for n, subm in model.named_children() if len(list(subm.parameters())) > 0
             ]
-            finetune_blocks = model_blocks[-self.cli_args.finetune_depth:]
+            finetune_blocks = model_blocks[-self.cli_args.finetune_depth :]
             model.load_state_dict(
                 {
                     k: v
@@ -508,6 +508,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--device", required=True, type=int)
     parser.add_argument("--tag", required=False, default="", help="Tag string for logging")
-    parser.add_argument("--val-ratio", required=False, type=float, default=0.25)
+    parser.add_argument("--val-ratio", required=False, type=float, default=0.2)
     cli_args = parser.parse_args()
     NoduleTrainingApp(cli_args).main()
