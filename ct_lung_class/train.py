@@ -13,17 +13,16 @@ from constants import (
     METRICS_SIZE,
 )
 from image import NoduleInfoTuple
-from datasets import DatasetItem, NoduleDataset, getNoduleInfoList
-from torch.optim import SGD, Adam
+from datasets import DatasetItem, NoduleDataset
+from torch.optim import Adam
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from pretrained import create_pretrained_medical_resnet
 from util.logconf import logging
-from util.util import enumerateWithEstimate # importstr
+from util.util import enumerateWithEstimate  # importstr
 from torch.utils.tensorboard import SummaryWriter
+from conf import SETTINGS
 
 
-LOG_DIR = "/home/kaplinsp/ct_lung_class/logs"
-OUTPUT_PATH = "/home/kaplinsp/ct_lung_class/ct_lung_class/models/"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 world_size = torch.cuda.device_count()
@@ -58,7 +57,7 @@ class NoduleTrainingApp:
         self, learn_rate: float, momentum: float, l2_reg: float
     ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
         # optimizer = SGD(self.model.parameters(), lr=learn_rate, momentum=momentum, nesterov=True)
-        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1500)
         # return optimizer, scheduler
         return Adam(self.model.parameters(), lr=learn_rate, weight_decay=l2_reg)
 
@@ -111,14 +110,14 @@ class NoduleTrainingApp:
         return val_dl
 
     def init_logs_outputs(self):
-        model_output_dir = os.path.join(OUTPUT_PATH, self.run_dir)
+        model_output_dir = os.path.join(SETTINGS["model_dir"], self.run_dir)
         if not os.path.exists(model_output_dir):
             os.mkdir(model_output_dir)
 
-        if not os.path.exists(LOG_DIR):
-            os.mkdir(LOG_DIR)
+        if not os.path.exists(SETTINGS["log_dir"]):
+            os.mkdir(SETTINGS["log_dir"])
 
-        log_file = os.path.join(LOG_DIR, self.run_dir)
+        log_file = os.path.join(SETTINGS["log_dir"], self.run_dir)
         file_handler = logging.FileHandler(log_file)
         self.logger.addHandler(file_handler)
 
@@ -159,7 +158,8 @@ class NoduleTrainingApp:
         self.assert_no_leak(train_dl, val_dl, train_set + test_set)
         executed = " ".join(sys.argv)
         self.writer = SummaryWriter(
-            f"/data/kaplinsp/tensorboard/full-dataset/{self.time_str}_{self.tag}_{executed}_{local_rank}"
+            f"/data/kaplinsp/tensorboard/full-dataset/"
+            f"{self.time_str}_{self.tag}_{executed}_{local_rank}"
         )
         self.train(train_dl, val_dl)
 

@@ -9,7 +9,6 @@ import torch.multiprocessing as mp
 from datasets import getNoduleInfoList
 from image import NoduleInfoTuple
 from train import NoduleTrainingApp
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def create_argument_parser():

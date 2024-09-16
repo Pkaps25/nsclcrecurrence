@@ -11,7 +11,7 @@ from image import (
     Coord3D,
     NoduleInfoGenerator,
     PrasadSampleGeneratoryStrategy,
-    # R17SampleGeneratorStrategy,
+    R17SampleGeneratorStrategy,
     NoduleImage,
     NoduleInfoTuple,
     Slice3D,
@@ -34,8 +34,8 @@ DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 def getNoduleInfoList() -> List[NoduleInfoTuple]:
     generator = NoduleInfoGenerator()
-    generator.add_strategies(PrasadSampleGeneratoryStrategy)
-    # generator.add_strategies(R17SampleGeneratorStrategy, PrasadSampleGeneratoryStrategy)
+    # generator.add_strategies(PrasadSampleGeneratoryStrategy)
+    generator.add_strategies(R17SampleGeneratorStrategy, PrasadSampleGeneratoryStrategy)
     return generator.generate_all_samples()
 
 
