@@ -5,12 +5,12 @@ from tqdm import tqdm
 
 
 # Define the different argument values as lists
-learn_rate = [0.001, 0.0001]
-model = ["monai.networks.nets.densenet169", "monai.networks.nets.densenet121"]
+batch_size = [2, 4]
+model = "monai.networks.nets.densenet121"
+decay = [1e-4]
 devices = list(range(4))
-padding = ["border", "zeros"]
 # Use itertools.product to generate all combinations of arguments
-combinations = list(itertools.product(learn_rate, model, padding))
+combinations = list(itertools.product(batch_size, decay))
 
 # Iterate over each combination and spawn the process
 
@@ -18,17 +18,17 @@ combinations = list(itertools.product(learn_rate, model, padding))
 def run_command(combo, device):
     cmd = [
         "python",
-        "ct_lung_class/train.py",
+        "ct_lung_class/run.py",
         "--epochs",
-        "10000",
+        "3000",
         "--batch-size",
-        "16",
+        str(combo[0]),
         "--affine-prob",
-        "0.6",
+        "0.75",
         "--translate",
-        "10",
+        "15",
         "--scale",
-        "0.15",
+        "0.1",
         "--dilate",
         "10",
         "--resample",
@@ -36,24 +36,22 @@ def run_command(combo, device):
         "--val-ratio",
         "0.2",
         "--padding",
-        str(combo[2]),
-        "--device",
-        str(device),
+        "border",
         "--learn-rate",
-        str(combo[0]),
+        "0.001",
         "--momentum",
         "0.99",
         "--weight-decay",
-        "0.001",
-        "--model",
         str(combo[1]),
+        "--model",
+        model,
     ]
 
     print(f"Running command: {' '.join(cmd)}")
     subprocess.run(cmd)
 
 
-with ProcessPoolExecutor(max_workers=8) as executor:
+with ProcessPoolExecutor(max_workers=4) as executor:
     futures = []
     for i, combo in enumerate(combinations):
         device = devices[i % len(devices)]

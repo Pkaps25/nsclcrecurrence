@@ -9,6 +9,8 @@ from typing import List, Tuple, Union
 import SimpleITK as sitk
 import numpy as np
 
+from exclude_prasad import EXCLUDE_PRASAD_IDS
+
 [
     "/data/etay/lung_hist_dat/original_dat_nrrds/nod5.nrrd",
     "/data/etay/lung_hist_dat/original_dat_nrrds/nod8.nrrd",
@@ -30,35 +32,36 @@ import numpy as np
 
 
 # Manual segs fixed 8, 20, 32, 33, 130
+# Sep 11: 5, 24, 42, 76, 128, 173
 EXCLUDE_NODULE_FILES = [
-    (5, (68.5, 25.6, -52.8)),  # TODO need help
+    # (5, (68.5, 25.6, -52.8)),  # fixed NOT YET USED
     # (8, (104.4, 31.5, -105.0)), # fixed low confidence
-    (15, (72.4, 4.2, -73.8)),  # unable
-    # (20, (51.0, 32.6, -30.9)), # fixed low confidence
-    (24, (88.9, -153.8, -83.8)),  # TODO
+    (15, (72.4, 4.2, -73.8)),  # TODO unable
+    (20, (51.0, 32.6, -30.9)),  # TODO not being found
+    # (24, (88.9, -153.8, -83.8)),  # fixed NOT YET USED
     # (26, (-76.1, 77.4, -126.0)), # fixed coordinate
     # (32, (-105.6, -87.2, -204.4)), # fixed seg
     (33, (-103.6, 41.3, -145.6)),  # fixed seg
-    (42, (-119.9, 36.6, -72.5)),  # TODO need help
+    # (42, (-119.9, 36.6, -72.5)),  # fixed NOT YET USED
     (44, (-92.8, -34.3, -186.1)),  # TODO need help
     (61, (-82.3, -4.6, 167.5)),  # bad image
-    (63, (-44.3, 44.4, -66.2)),  # TODO merge segmentations
+    (63, (-44.3, 44.4, -66.2)),  # TODO need help
     # (69, (89.3, 76.9, -128.7)), # fixed coordinate
-    (76, (-28.8, 38.9, -68.8)),  # TODO need help
+    # (76, (-28.8, 38.9, -68.8)),  # fixed NOT YET USED
     (82, (-38.2, 17.1, -211.2)),  # fixed seg
     (84, (-64.6, 60.5, -114.5)),
     (86, (36.5, 54.6, -124.0)),  # TODO check if z coordinate is actually I240
     (89, (-86.5, -49.7, -114.0)),  # TODO No nodule
     (98, (35.8, 45.9, -102.5)),  # TODO need help
     (103, (112.6, 74.4, 2688.8)),  # bad image
-    (128, (113.4, 38.7, -72.5)),  # TODO need help
+    # (128, (113.4, 38.7, 72.5)),  # fixed NOT YET USED (bad coord)
     # (130, (-123.3, 55.5, -180.9)), # fixed seg
     (131, (-107.7, 73.5, -137.5)),  # TODO need help
     (138, (-96.8, 45.9, -145.0)),  # TODO need help
     (139, (-32.5, 65.7, -111.2)),  # TODO need help
     (144, (-79.9, 78.0, -142.5)),  # TODO need help
     (147, (-59.7, 31.8, -40.6)),  # TODO need help
-    (173, (-91.0, 92.9, -181.8)),  # fixed seg, TODO need to merge
+    # (173, (-91.0, 92.9, -181.8)),  # fixed seg, merged, NOT YET USED
     (178, (-51.9, 12.3, -42.5)),  # TODO need help
     (185, (86.7, -153.3, 608.5)),  # TODO need help
 ]
@@ -141,14 +144,14 @@ class NoduleImage(ABC):
         label_shape_filter.Execute(dilated_segmentation)
         bounding_box = label_shape_filter.GetBoundingBox(1)
         box_start = dilated_segmentation.TransformIndexToPhysicalPoint(
-            bounding_box[0: int(len(bounding_box) / 2)]
+            bounding_box[0 : int(len(bounding_box) / 2)]
         )
         box_end = dilated_segmentation.TransformIndexToPhysicalPoint(
             [
                 x + sz
                 for x, sz in zip(
-                    bounding_box[0: int(len(bounding_box) / 2)],
-                    bounding_box[int(len(bounding_box) / 2):],
+                    bounding_box[0 : int(len(bounding_box) / 2)],
+                    bounding_box[int(len(bounding_box) / 2) :],
                 )
             ]
         )
@@ -238,7 +241,7 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
 
 class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
     def generate_nodule_info() -> List[NoduleInfoTuple]:
-        coord_file = "/home/kaplinsp/annots_michelle_label.csv"
+        coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annots_michelle_label.csv"
         nodule_infos = []
 
         # with open(
@@ -253,15 +256,15 @@ class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
             for row in reader:
 
                 subject_id = row[3]
-                # if subject_id in exclude:
-                #     logger.warning(f"Skipping {subject_id}")
-                #     continue
                 try:
                     coords = ras_to_lps(np.array(literal_eval(row[8])))
                 except SyntaxError:
                     logger.warning(f"No coordinates for {subject_id}")
                     continue
 
+                if (int(row[1]), tuple(coords)) in EXCLUDE_PRASAD_IDS:
+                    print(f"Skipping {subject_id}")
+                    continue
                 file_path = f"/data/kaplinsp/prasad_d/{subject_id}"
                 nodule_infos.append(
                     NoduleInfoTuple(int(row[-1]), subject_id, coords, file_path, DICOMNodule)
