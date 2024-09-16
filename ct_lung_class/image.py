@@ -11,25 +11,6 @@ import numpy as np
 
 from exclude_prasad import EXCLUDE_PRASAD_IDS
 
-[
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod5.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod8.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod15.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod32.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod33.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod42.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod76.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod82.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod89.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod98.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod130.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod131.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod138.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod139.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod147.nrrd",
-    "/data/etay/lung_hist_dat/original_dat_nrrds/nod185.nrrd",
-]
-
 
 # Manual segs fixed 8, 20, 32, 33, 130
 # Sep 11: 5, 24, 42, 76, 128, 173
