@@ -1,68 +1,31 @@
-# from collections import defaultdict
-import datetime
-# from functools import lru_cache
-import glob
-import logging
-import os
-from pathlib import Path
-import tempfile
-# from typing import List
-import SimpleITK as sitk
-# import multiprocessing as mp
-# import xnat
-import json
-import csv
-import zipfile
+from functools import cached_property
+import itertools
+from typing import Generator, List, Tuple
+from sklearn.model_selection import StratifiedKFold, train_test_split
+
+from datasets import getNoduleInfoList
+from image import NoduleInfoTuple
 
 
-def setup_logger(name, log_file):
-    logger = logging.getLogger(name)
+class DataManager:
 
-    logger.setLevel(logging.INFO)
+    def __init__(self, k_folds: int, val_ratio: float, dataset_names: List[str]) -> None:
+        self.k_folds = k_folds
+        self.val_ratio = val_ratio
+        self.dataset_names = list(dataset_names)
 
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
+    @cached_property
+    def nodule_info_list(self) -> List[NoduleInfoTuple]:
+        return getNoduleInfoList(self.dataset_names)
 
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(logging.INFO)
-
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-    ch.setFormatter(formatter)
-    fh.setFormatter(formatter)
-    if not logger.handlers:  # Avoid adding handlers multiple times
-        logger.addHandler(ch)
-        logger.addHandler(fh)
-
-    return logger
-
-# Set up the logger
-logger = setup_logger(__name__, 'app.log')
-
-PROJECT_ID = "17-353D_Prasad"
-
-DATA_DIR = "/data/kaplinsp/dicom/"
-
-      
-import shutil
-def process_files():
-    zips = glob.glob("/data/kaplinsp/prasad_d/*.zip")
-    for zip_file_path in zips:
-        subject_id = Path(zip_file_path).stem
-        dicom_dir = os.path.join("/data/kaplinsp/prasad_d", subject_id)
-        if not os.path.exists(dicom_dir):
-            os.mkdir(dicom_dir)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
-                dicom_files = glob.glob(os.path.join(temp_dir, '*', 'scans', '*', 'resources', 'DICOM', 'files/*dcm'))
-                print(f"Moving files from {zip_file_path} to {dicom_dir}")
-                for dcm in dicom_files:
-                    dst = Path(dicom_dir) / Path(dcm).name
-                    shutil.move(dcm, dst)
-                
-        
-                
-
-if __name__ == "__main__":
-    process_files()
+    def split(self) -> Generator[Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]], None, None]:
+        nods = [[nod] for nod in self.nodule_info_list]
+        labels = [nod.is_nodule for nod in self.nodule_info_list]
+        if self.k_folds == 1:
+            x_train, x_test = train_test_split(nods, test_size=self.val_ratio, stratify=labels)
+            yield list(itertools.chain(*x_train)), list(itertools.chain(*x_test))
+        else:
+            kfold = StratifiedKFold(n_splits=self.k_folds, shuffle=True)
+            splits = kfold.split(nods, labels)
+            for train_index, test_index in splits:
+                yield [nods[i][0] for i in train_index], [nods[i][0] for i in test_index]

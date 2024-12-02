@@ -10,3 +10,4 @@ ct_lung_class/*csv
 ct_lung_class/models
 ct_lung_class/.pytest_cache
 ct_lung_class/.ipynb_checkpoints
+ct_lung_class/pdfs

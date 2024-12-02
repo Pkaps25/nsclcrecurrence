@@ -5,7 +5,10 @@ from dataclasses import dataclass
 import logging
 import os
 import pickle
+import random
 from typing import List, Tuple, Union
+
+import pandas as pd
 import SimpleITK as sitk
 import numpy as np
 
@@ -19,6 +22,7 @@ EXCLUDE_NODULE_FILES = [
     # (8, (104.4, 31.5, -105.0)), # fixed low confidence
     (15, (72.4, 4.2, -73.8)),  # TODO unable
     (20, (51.0, 32.6, -30.9)),  # TODO not being found
+    (29, (-90.1, -25.2, -146.2)),  # RESAMPLES INTO 0
     # (24, (88.9, -153.8, -83.8)),  # fixed NOT YET USED
     # (26, (-76.1, 77.4, -126.0)), # fixed coordinate
     # (32, (-105.6, -87.2, -204.4)), # fixed seg
@@ -100,17 +104,109 @@ class NoduleImage(ABC):
     def nodule_segmentation_image(self) -> sitk.Image:
         pass
 
+    import SimpleITK as sitk
+
+    def extract_fixed_size_nodule(self, box_size: list, preprocess: bool = True):
+        """
+        Extracts a bounding box from the CT and segmentation images, ensuring spatial alignment.
+
+        Parameters:
+            box_size (list): The size of the box in physical units (e.g., mm) for 
+              each dimension [x, y, z].
+            preprocess (bool): Whether to preprocess the CT image 
+              (clamping, normalizing, rescaling).
+
+        Returns:
+            tuple: Extracted CT bounding box and segmentation bounding box as sitk.Images.
+        """
+        # Work on the main CT image
+        ct = self.image
+        if preprocess:
+            ct = sitk.Clamp(ct, ct.GetPixelIDValue(), CT_AIR, CT_BONE)
+            ct = sitk.Normalize(ct)
+            ct = sitk.RescaleIntensity(ct, 0, 1)
+
+        def get_box_from_physical_point(image, point):
+
+            spacing = image.GetSpacing()
+            center = image.TransformPhysicalPointToIndex(point)
+
+            # Calculate half the box size in pixels for each dimension
+            half_box_size_pixels = [int((box_size[i] / spacing[i]) / 2) for i in range(3)]
+
+            # Calculate the starting and ending indices for the box
+            start = [int(center[i] - half_box_size_pixels[i]) for i in range(3)]
+            end = [int(center[i] + half_box_size_pixels[i]) for i in range(3)]
+
+            # Ensure the indices are within the image bounds
+            start = [max(0, min(start[i], image.GetSize()[i] - 1)) for i in range(3)]
+            end = [max(0, min(end[i], image.GetSize()[i] - 1)) for i in range(3)]
+
+            # Extract the region
+            box = image[start[0] : end[0], start[1] : end[1], start[2] : end[2]]
+            return box
+
+        ct_box = get_box_from_physical_point(ct, self.center_lps)
+        # seg_box = get_box_from_physical_point(self.nodule_segmentation_image(), self.center_lps)
+
+        # return ct_box, seg_box
+        return ct_box
+
+    def extract_normal_lung_region(self, box_dim: int, preprocess: bool):
+        segmentation_image = self.nodule_segmentation_image()
+        normal_lung_mask = sitk.BinaryNot(segmentation_image)
+        labeled_normal_lung = sitk.ConnectedComponent(normal_lung_mask)
+        normal_lung_np = sitk.GetArrayFromImage(labeled_normal_lung)
+        normal_indices = np.argwhere(normal_lung_np > 0)
+
+        if len(normal_indices) == 0:
+            raise ValueError(
+                f"No normal lung regions found in the segmentation mask.: {self.file_path}"
+            )
+
+        random_index = random.choice(normal_indices)
+        center_index = np.array(random_index[::-1])  # Convert from (z, y, x) to (x, y, z)
+
+        # Compute the bounding box start and end indices
+        half_box_size = np.array(box_dim) // 2
+        start_index = center_index - half_box_size
+        end_index = center_index + half_box_size
+
+        # Ensure bounding box stays within the image bounds
+        image_size = np.array(normal_lung_mask.GetSize())
+        start_index = np.clip(start_index, 0, image_size - 1)
+        end_index = np.clip(end_index, 0, image_size - 1)
+
+        # Convert back to physical coordinates
+        box_start = normal_lung_mask.TransformIndexToPhysicalPoint(start_index.tolist())
+        box_end = normal_lung_mask.TransformIndexToPhysicalPoint(end_index.tolist())
+
+        # Step 3: Extract and preprocess the image region
+        ct: sitk.Image = self.image
+        if preprocess:
+            ct = sitk.Clamp(ct, ct.GetPixelIDValue(), CT_AIR, CT_BONE)
+            ct = sitk.Normalize(ct)
+            ct = sitk.RescaleIntensity(ct, 0, 1)
+
+        imgB_start_index = ct.TransformPhysicalPointToIndex(box_start)
+        imgB_end_index = ct.TransformPhysicalPointToIndex(box_end)
+        return sitk.Slice(image1=ct, start=imgB_start_index, stop=imgB_end_index)
+
     def get_connected_component_id_for_nodule(self, labeled_segmentation_image: sitk.Image) -> int:
         index = labeled_segmentation_image.TransformPhysicalPointToIndex(self.center_lps)
-        index_box = [slice(x - 10, x + 10) for x in index]
+        index_box = [slice(x - 5, x + 5) for x in index]
         center_box = sitk.GetArrayFromImage(labeled_segmentation_image[index_box])
         segs = np.unique(center_box)
         return int(np.max(segs))
 
-    def extract_bounding_box_nodule(self, preprocess: bool, dilation_mm: int) -> sitk.Image:
+    def extract_bounding_box_nodule(
+        self, preprocess: bool, dilation_mm: int, box_size: int
+    ) -> sitk.Image:
         segmentation_image = self.nodule_segmentation_image()
         labeled_segmentation_image = sitk.ConnectedComponent(segmentation_image)
         segmentation_id = self.get_connected_component_id_for_nodule(labeled_segmentation_image)
+        if segmentation_id == 0:
+            return self.extract_fixed_size_nodule([box_size] * 3, True)
 
         label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
         subset_segmentation = sitk.BinaryThreshold(
@@ -154,11 +250,20 @@ class NRRDNodule(NoduleImage):
 
     @property
     def image(self) -> sitk.Image:
-        return sitk.ReadImage(self.image_file_path)
+        reader = sitk.ImageFileReader()
+        reader.SetImageIO("NrrdImageIO")
+        reader.SetFileName(self.image_file_path)
+        image = reader.Execute()
+        return image
 
     def nodule_segmentation_image(self) -> sitk.Image:
-        nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
-        seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
+        if "etay" in self.image_file_path:
+            nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
+            seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
+        else:
+            nod_id = os.path.basename(self.image_file_path)
+            seg_file = f"/data/kaplinsp/transformation_seg/{nod_id.replace('nrrd', 'nii.gz')}"
+
         return sitk.ReadImage(seg_file)
 
 
@@ -218,6 +323,28 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
                 )
 
         return nodule_infos
+
+
+class SCLCSampleGenerator(SampleGeneratorStrategy):
+
+    def generate_nodule_info() -> List[NoduleInfoTuple]:
+        coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations_transformed.csv"
+
+        exclude_paths = ["/data/kaplinsp/transformation/A114.nrrd"]
+        coord_df = pd.read_csv(coord_file, index_col=False)
+        coord_df = coord_df[(coord_df["label"] != 2) & (~coord_df["path"].isin(exclude_paths))]
+        return list(
+            coord_df.apply(
+                lambda row: NoduleInfoTuple(
+                    row["label"],
+                    row["path"],
+                    (row["x"], row["y"], row["z"]),
+                    row["path"],
+                    NRRDNodule,
+                ),
+                axis=1,
+            ).to_numpy()
+        )
 
 
 class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
