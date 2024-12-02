@@ -27,7 +27,7 @@ def create_pretrained_medical_resnet(
         **kwargs_monai_resnet,
     )
     net_dict = net.state_dict()
-    pretrain = torch.load(pretrained_path)
+    pretrain = torch.load(pretrained_path, weights_only=True)
     pretrain["state_dict"] = {
         k.replace("module.", ""): v for k, v in pretrain["state_dict"].items()
     }

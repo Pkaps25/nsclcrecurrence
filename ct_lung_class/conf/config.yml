@@ -1,3 +1,3 @@
-tensorboard_dir: /data/kaplinsp/tensorboard/full-dataset
+tensorboard_dir: /data/kaplinsp/tensorboard/transformation-classification
 log_dir: /data/kaplinsp/logs
 model_dir: /data/kaplinsp/models

@@ -1,5 +1,5 @@
 import copy
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 import SimpleITK as sitk
 
 import torch
@@ -14,6 +14,7 @@ from image import (
     R17SampleGeneratorStrategy,
     NoduleImage,
     NoduleInfoTuple,
+    SCLCSampleGenerator,
     Slice3D,
     Image,
 )
@@ -23,106 +24,92 @@ from util.logconf import logging
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 
-
-image_cache = getCache("image_slices")
-seg_cache = getCache("segmentations")
-nodule_seg_cache = getCache("nodules")
-bb_cache = getCache("box")
+# bb_cache = getCache("box")
 
 DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 
-def getNoduleInfoList() -> List[NoduleInfoTuple]:
+def getNoduleInfoList(
+    dataset_names: Optional[List[str]] = ["r17", "prasad"]
+) -> List[NoduleInfoTuple]:
+    mapping = {
+        "r17": R17SampleGeneratorStrategy,
+        "prasad": PrasadSampleGeneratoryStrategy,
+        "sclc": SCLCSampleGenerator,
+    }
     generator = NoduleInfoGenerator()
-    # generator.add_strategies(PrasadSampleGeneratoryStrategy)
-    generator.add_strategies(R17SampleGeneratorStrategy, PrasadSampleGeneratoryStrategy)
-    return generator.generate_all_samples()
+    generator.add_strategies(*[mapping[name] for name in dataset_names])
+    samples = generator.generate_all_samples()
+    return samples
 
 
-def resample_image(input_image: sitk.Image, output_size: int) -> sitk.Image:
+def resample_image(input_image: sitk.Image, output_size: Tuple[int, int, int]) -> sitk.Image:
     resample = sitk.ResampleImageFilter()
     original_size = input_image.GetSize()
     original_spacing = input_image.GetSpacing()
     # new_spacing = old_size * old_spacing / new_size
     output_spacing = [
-        original_size[i] * original_spacing[i] / output_size for i in range(len(original_size))
+        original_size[i] * original_spacing[i] / output_size[i] for i in range(len(original_size))
     ]
     resample.SetOutputSpacing(output_spacing)
-    resample.SetSize([output_size] * 3)
+    resample.SetSize(output_size)
     resample.SetOutputDirection(input_image.GetDirection())
     resample.SetOutputOrigin(input_image.GetOrigin())
     resample.SetTransform(sitk.Transform())
-    resample.SetDefaultPixelValue(input_image.GetPixelIDValue())
+    resample.SetDefaultPixelValue(0)
     resample.SetInterpolator(sitk.sitkBSpline)
     return resample.Execute(input_image)
 
 
 # @image_cache.memoize(typed=True)
-@bb_cache.memoize(typed=True)
+@ (getCache("fixedsize")).memoize(typed=True)
 def getCtRawNodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
     preprocess: bool,
     dilation: int,
-    resample_size,
-) -> Tuple[Image, Slice3D]:
+    resample_size: int,
+    box_size: List[int],
+) -> torch.Tensor:
     log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    # return ct.nodule_slice(box_dim=width_irc, preprocess=preprocess)
-    raw_nodule = ct.extract_bounding_box_nodule(preprocess=preprocess, dilation_mm=dilation)
-    resampled = resample_image(raw_nodule, resample_size)
-    return sitk.GetArrayFromImage(resampled)
+    # raw_nodule = ct.extract_bounding_box_nodule(preprocess=preprocess, dilation_mm=dilation)
+    # resampled = resample_image(raw_nodule, resample_size)
+
+    # raw_nodule, raw_segmentation = ct.extract_fixed_size_nodule(box_size, True)
+    raw_nodule = ct.extract_fixed_size_nodule(box_size, True)
+    try:
+        resampled_nodule = resample_image(raw_nodule, resample_size)
+        # resampled_segmentation = resample_image(raw_segmentation, resample_size)
+    except Exception as e:
+        print(nodule_file_path)
+        raise
+
+    nodule_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_nodule)).unsqueeze(0)
+    # seg_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_segmentation)).unsqueeze(0)
+    # return torch.cat([nodule_tensor, seg_tensor]).to(torch.float32)
+    return nodule_tensor.to(torch.float32)
 
 
-@seg_cache.memoize(typed=True)
-def get_segmentation(nodule_file_path: str, image_type: NoduleImage, center_lps: Coord3D):
-    log.info(f"Segmenting lung for {nodule_file_path}")
-    ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    return ct.lung_segmentation()
-
-
-@nodule_seg_cache.memoize(typed=True)
-def get_nodule_segmentation(
+# @image_cache.memoize(typed=True)
+@ (getCache("box")).memoize(typed=True)
+def getCtRawNodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
-    dilation: Optional[int] = None,
-) -> Image:
-    log.info(f"Segmenting nodule for {nodule_file_path}")
+    preprocess: bool,
+    dilation: int,
+    resample_size: int,
+    box_size: List[int],
+) -> torch.Tensor:
+    log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    segmentation = ct.nodule_segmentation_image()
-    if dilation is not None:
-        signed_distance_map = sitk.SignedMaurerDistanceMap(
-            segmentation, squaredDistance=False, useImageSpacing=True
-        )
-        segmentation = signed_distance_map < dilation
-
-    return sitk.GetArrayFromImage(segmentation)
-
-
-def slice_and_pad_segmentation(
-    seg_type: str,
-    nodule_info_tup: NoduleInfoTuple,
-    box_dim: Coord3D,
-    slice_3d: Slice3D,
-    dilation: Optional[int] = None,
-):
-    if seg_type == "lung":
-        segmentation = get_segmentation(
-            nodule_info_tup.file_path, nodule_info_tup.image_type, nodule_info_tup.center_lps
-        )
-    elif seg_type == "nodule":
-        segmentation = get_nodule_segmentation(
-            nodule_info_tup.file_path,
-            nodule_info_tup.image_type,
-            nodule_info_tup.center_lps,
-            dilation,
-        )
-    sliced_seg = segmentation[slice_3d]
-    pad_width = [(0, max(0, box_dim[2 - i] - sliced_seg.shape[i])) for i in range(3)]
-    padded_arr = np.pad(sliced_seg, pad_width=pad_width, mode="constant", constant_values=0)
-    return padded_arr
+    raw_nodule = ct.extract_bounding_box_nodule(
+        preprocess=preprocess, dilation_mm=dilation, box_size=box_size
+    )
+    resampled = resample_image(raw_nodule, resample_size)
+    return torch.from_numpy(sitk.GetArrayFromImage(resampled)).to(torch.float32).unsqueeze(0)
 
 
 def getCtAugmentedNodule(
@@ -130,7 +117,8 @@ def getCtAugmentedNodule(
     noduleInfoTup: NoduleInfoTuple,
     preprocess: bool,
     dilation: int,
-    resample_size: int,
+    resample_size: Tuple[int, int, int],
+    box_size: List[int],
 ) -> Tuple[Image, Slice3D]:
     ct_chunk = getCtRawNodule(
         noduleInfoTup.file_path,
@@ -139,17 +127,18 @@ def getCtAugmentedNodule(
         preprocess=preprocess,
         dilation=dilation,
         resample_size=resample_size,
+        box_size=box_size,
     )
     rand_affine = RandAffine(
         mode=("bilinear"),
         prob=augmentation_dict["affine_prob"],
         translate_range=[augmentation_dict["translate"]] * 3,
-        rotate_range=(np.pi / 6, np.pi / 6, np.pi / 4),
+        rotate_range=(np.pi / 2, np.pi / 2),
         scale_range=[augmentation_dict["scale"] * 3],
         padding_mode=augmentation_dict["padding"],
     )
-    transform = Compose([rand_affine, RandFlip(), RandGaussianNoise()])
-    ct_t = transform(ct_chunk).unsqueeze(0).to(torch.float32)
+    transform = Compose([rand_affine, RandFlip(0.5), RandGaussianNoise(0.2)])
+    ct_t = transform(ct_chunk).to(torch.float32)
     return ct_t
 
 
@@ -159,6 +148,7 @@ class NoduleDataset(Dataset):
         nodule_info_list,
         dilate,
         resample,
+        box_size,
         isValSet_bool=None,
         augmentation_dict=None,
     ):
@@ -166,6 +156,7 @@ class NoduleDataset(Dataset):
         self.noduleInfo_list = copy.copy(nodule_info_list)
         self.dilate = dilate
         self.resample = resample
+        self.box_size = box_size
 
         self.negative_list = [nt for nt in self.noduleInfo_list if not nt.is_nodule]
 
@@ -187,6 +178,8 @@ class NoduleDataset(Dataset):
 
     def __getitem__(self, ndx) -> DatasetItem:
         noduleInfo_tup = self.noduleInfo_list[ndx]
+        # if not noduleInfo_tup.is_nodule:
+        #     return torch.from_numpy(random_space_in_image(noduleInfo_tup, resample_size=self.resample)).unsqueeze(0).to(torch.float32), noduleInfo_tup.is_nodule
 
         if self.augmentation_dict:
             nodule_t = getCtAugmentedNodule(
@@ -195,24 +188,34 @@ class NoduleDataset(Dataset):
                 preprocess=True,
                 dilation=self.dilate,
                 resample_size=self.resample,
+                box_size=self.box_size,
             )
         else:
-            nodule_a = getCtRawNodule(
+            nodule_t = getCtRawNodule(
                 noduleInfo_tup.file_path,
                 noduleInfo_tup.image_type,
                 noduleInfo_tup.center_lps,
                 preprocess=True,
                 dilation=self.dilate,
                 resample_size=self.resample,
+                box_size=self.box_size,
             )
-            nodule_t = torch.from_numpy(nodule_a).to(torch.float32)
-            nodule_t = nodule_t.unsqueeze(0)
+            # nodule_t = nodule_t.unsqueeze(0)
 
-        pos_t = torch.tensor(
-            [not noduleInfo_tup.is_nodule, noduleInfo_tup.is_nodule],
-            dtype=torch.long,
-        )
         assert not torch.any(torch.isnan(nodule_t)) and torch.all(
             torch.isfinite(nodule_t)
         ), noduleInfo_tup.file_path
-        return nodule_t, pos_t, noduleInfo_tup.nod_id
+        return nodule_t, noduleInfo_tup.is_nodule
+
+
+normal_cache = getCache("normallung")
+
+
+@normal_cache.memoize(typed=True)
+def random_space_in_image(nodule_info_tuple, resample_size):
+    logging.info(f"Slicing normal lung for {nodule_info_tuple.file_path}")
+    nodule = nodule_info_tuple.image_type(
+        nodule_info_tuple.file_path, nodule_info_tuple.center_lps
+    )
+    region = nodule.extract_normal_lung_region(box_dim=30, preprocess=True)
+    return sitk.GetArrayFromImage(resample_image(region, resample_size))

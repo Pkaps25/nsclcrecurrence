@@ -1,65 +1,65 @@
 import itertools
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+import subprocess
 
 
 # Define the different argument values as lists
-epochs = [2000]
-batch_size = [16]
-affine_prob = [0.75]  # Example of varying affine-prob
-translate = [12]  # Example of varying translate
-scale = [0.12]
-# dilate = [3, 6, 10]
-dilate = [6]
-resample = [64]
-val_ratio = [0.2]
-padding = ["border"]
-
+dilate = [10, 20]
+box_size = [25, 35]
+lr = [5e-4, 1e-3]
+size = ["128"]
+# dataset = ["r17", "prasad"]
 devices = list(range(4))
 
 # Use itertools.product to generate all combinations of arguments
-combinations = list(
-    itertools.product(
-        epochs, batch_size, affine_prob, translate, scale, dilate, resample, val_ratio, padding
-    )
-)
+combinations = list(itertools.product(dilate, box_size, lr))
 
 # Iterate over each combination and spawn the process
 
 
 def run_command(combo, device):
+    # resample = ("32", "48", "48") if combo[0] == "luna" else ("64", "64", "64",)
+    # dilate = "3" if combo[0] == "luna" else "10"
     cmd = [
         "python",
-        "ct_lung_class/train.py",
+        "ct_lung_class/run_single.py",
         "--epochs",
-        str(combo[0]),
+        "2000",
         "--batch-size",
-        str(combo[1]),
-        "--affine-prob",
-        str(combo[2]),
-        "--translate",
-        str(combo[3]),
-        "--scale",
-        str(combo[4]),
+        "16",
         "--dilate",
-        str(combo[5]),
+        str(combo[0]),
         "--resample",
-        str(combo[6]),
-        "--val-ratio",
-        str(combo[7]),
-        "--padding",
-        str(combo[8]),
+        "128",
+        "128",
+        "128",
         "--device",
         str(device),
         "--model",
-        "monai.networks.nets.densenet121",
+        "densenet",
+        "--optimizer",
+        "adam",
+        "--dataset",
+        "sclc",
+        "--weight-decay",
+        "0.001",
+        "--learn-rate",
+        str(combo[2]),
+        "--tag",
+        "middle-slice-2d",
+        "--momentum",
+        "0.99",
+        "--box-size",
+        str(combo[1]),
+        # "--oversample"
     ]
 
     print(f"Running command: {' '.join(cmd)}")
-    # subprocess.run(cmd)
+    subprocess.run(cmd)
 
 
-with ProcessPoolExecutor(max_workers=8) as executor:
+with ProcessPoolExecutor(max_workers=4) as executor:
     futures = []
     for i, combo in enumerate(combinations):
         device = devices[i % len(devices)]

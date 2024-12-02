@@ -1,7 +1,8 @@
 import os
 from datetime import datetime
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+import monai
 
 import numpy as np
 import torch
@@ -14,13 +15,18 @@ from constants import (
 )
 from image import NoduleInfoTuple
 from datasets import DatasetItem, NoduleDataset
-from torch.optim import Adam
+
+# from medmnist_model import load_mendminst_resnet50, load_mendminst_resnet18
+from torch.optim import Adam, SGD
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from pretrained import create_pretrained_medical_resnet
+from luna_model import create_pretrained_luna
 from util.logconf import logging
 from util.util import enumerateWithEstimate  # importstr
 from torch.utils.tensorboard import SummaryWriter
 from conf import SETTINGS
+
+# from monai.data import TestTimeAugmentation
 
 
 logger = logging.getLogger(__name__)
@@ -46,20 +52,46 @@ class NoduleTrainingApp:
         self.device = cli_args.device
 
     def init_model(self, model_path: str) -> torch.nn.Module:
-        # model_cls = importstr(model_path)
-        # model = model_cls(dropout_prob=0.4, spatial_dims=3, in_channels=1, out_channels=2)
-        model, _ = create_pretrained_medical_resnet("/data/kaplinsp/resnet50_medicalnet.tar")
+        if model_path == "densenet":
+            model = monai.networks.nets.densenet121(
+                dropout_prob=self.cli_args.dropout, spatial_dims=3, in_channels=1, out_channels=2
+            )
+        elif model_path == "resnet":
+            model, _ = create_pretrained_medical_resnet("/data/kaplinsp/resnet50_medicalnet.tar")
+        elif model_path == "luna":
+            model = create_pretrained_luna()
+        # elif model_path == "medmnist18":
+        #     model = load_mendminst_resnet18(self.cli_args.finetune_depth)
+        # elif model_path == "medmnist50":
+        #     model = load_mendminst_resnet50(self.cli_args.finetune_depth)
+        else:
+            raise ValueError("Invalid model choice")
+
         if self.use_cuda:
             model = model.to(self.device)
         return model
 
     def init_optimizer(
-        self, learn_rate: float, momentum: float, l2_reg: float
-    ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-        # optimizer = SGD(self.model.parameters(), lr=learn_rate, momentum=momentum, nesterov=True)
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1500)
-        # return optimizer, scheduler
-        return Adam(self.model.parameters(), lr=learn_rate, weight_decay=l2_reg)
+        self, optimizer_str: str, learn_rate: float, momentum: float, l2_reg: float
+    ) -> Tuple[torch.optim.Optimizer, Optional[torch.optim.lr_scheduler._LRScheduler]]:
+        if optimizer_str == "sgd":
+            optimizer = SGD(
+                self.model.parameters(),
+                lr=learn_rate,
+                momentum=momentum,
+                nesterov=True,
+                weight_decay=l2_reg,
+            )
+            # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
+            # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 50, 1, 1e-6)
+            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.99)
+        elif optimizer_str == "adam":
+            optimizer = Adam(self.model.parameters(), lr=learn_rate, weight_decay=l2_reg)
+            scheduler = None
+        else:
+            raise ValueError("Invalid optimizer")
+
+        return optimizer, scheduler
 
     def init_train_dataloader(self, nodule_list: List[NoduleInfoTuple]) -> DataLoader:
         train_ds = NoduleDataset(
@@ -68,23 +100,29 @@ class NoduleTrainingApp:
             augmentation_dict=self.augmentation_dict,
             dilate=self.cli_args.dilate,
             resample=self.cli_args.resample,
+            box_size=self.cli_args.box_size,
         )
         labels = np.array([s.is_nodule for s in nodule_list])
         class_counts = np.bincount(labels)
         class_weights = 1.0 / class_counts
+        self.class_weights = class_weights
         sample_weights = class_weights[labels]
         sample_weights
         sampler = WeightedRandomSampler(
             weights=sample_weights, num_samples=len(sample_weights), replacement=True
         )
+        if self.cli_args.oversample:
+            kwargs = {"sampler": sampler}
+        else:
+            kwargs = {"shuffle": True}
 
         train_dl = DataLoader(
             train_ds,
             batch_size=self.cli_args.batch_size,
             num_workers=self.cli_args.num_workers,
             pin_memory=self.use_cuda,
-            sampler=sampler,
             drop_last=False,
+            **kwargs,
         )
 
         return train_dl
@@ -96,6 +134,7 @@ class NoduleTrainingApp:
             isValSet_bool=True,
             dilate=self.cli_args.dilate,
             resample=self.cli_args.resample,
+            box_size=self.cli_args.box_size,
         )
 
         val_dl = DataLoader(
@@ -142,24 +181,26 @@ class NoduleTrainingApp:
         self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
         self.device = self.device if self.device is not None else local_rank % device_count
         self.model = self.init_model(self.cli_args.model)
-        # self.optimizer, self.scheduler = self.init_optimizer(
-        #     self.cli_args.learn_rate, self.cli_args.momentum, self.cli_args.weight_decay
-        # )
-        self.optimizer = self.init_optimizer(
-            self.cli_args.learn_rate, self.cli_args.momentum, self.cli_args.weight_decay
+        self.optimizer, self.scheduler = self.init_optimizer(
+            self.cli_args.optimizer,
+            self.cli_args.learn_rate,
+            self.cli_args.momentum,
+            self.cli_args.weight_decay,
         )
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
         self.init_logs_outputs()
-        train_set, test_set = dataset[local_rank]
+        train_set, test_set = dataset[local_rank] if self.cli_args.k_folds > 1 else dataset[0]
         # print(train_set, test_set)
         train_dl = self.init_train_dataloader(train_set)
         val_dl = self.init_val_dataloader(test_set)
         self.assert_no_leak(train_dl, val_dl, train_set + test_set)
         executed = " ".join(sys.argv)
         self.writer = SummaryWriter(
-            f"/data/kaplinsp/tensorboard/full-dataset/"
-            f"{self.time_str}_{self.tag}_{executed}_{local_rank}"
+            os.path.join(
+                f"{SETTINGS['tensorboard_dir']}",
+                f"{self.time_str}_{self.tag}_{executed}_{local_rank}",
+            )
         )
         self.train(train_dl, val_dl)
 
@@ -171,7 +212,7 @@ class NoduleTrainingApp:
 
             self.logger.info(
                 f"Epoch {epoch_ndx} of {self.cli_args.epochs}, {len(train_dl)}/{len(val_dl)} "
-                f"batches of size {self.cli_args.batch_size}"
+                f"batches of size {self.cli_args.batch_size}, lr = {self.scheduler.get_last_lr() if self.scheduler else self.cli_args.learn_rate}"
             )
 
             trnMetrics_t = self.train_epoch(epoch_ndx, train_dl)
@@ -179,7 +220,8 @@ class NoduleTrainingApp:
 
             valMetrics_t = self.validate(epoch_ndx, val_dl)
             self.log_metrics(epoch_ndx, "val", valMetrics_t)
-            # self.scheduler.step()
+            if self.scheduler:
+                self.scheduler.step(epoch_ndx)
             # it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
 
             # val_f1 = it_val_metric["pr/f1_score"]
@@ -236,15 +278,14 @@ class NoduleTrainingApp:
 
             torch.autograd.set_detect_anomaly(True)
             loss_var = self.compute_batch_loss(
-                batch_ndx,
-                batch_tup,
-                train_dl.batch_size,
-                train_metrics,
+                batch_ndx, batch_tup, train_dl.batch_size, train_metrics, "train", epoch_ndx
             )
             # loss_var.clip(1e-6)
             loss_var.backward()
             # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1e-6)
             self.optimizer.step()
+            # if self.scheduler:
+            #     self.scheduler.step(epoch_ndx + batch_ndx / len(train_dl))
 
         self.totalTrainingSamples_count += len(train_dl.dataset)
 
@@ -266,42 +307,38 @@ class NoduleTrainingApp:
             )
             for batch_ndx, batch_tup in batch_iter:
                 self.compute_batch_loss(
-                    batch_ndx,
-                    batch_tup,
-                    val_dl.batch_size,
-                    val_metrics,
+                    batch_ndx, batch_tup, val_dl.batch_size, val_metrics, "val", epoch_ndx
                 )
 
         return val_metrics.to("cpu")
 
     def compute_batch_loss(
-        self, batch_ndx: int, batch_tup: DatasetItem, batch_size: int, metrics_g: torch.Tensor
+        self,
+        batch_ndx: int,
+        batch_tup: DatasetItem,
+        batch_size: int,
+        metrics_g: torch.Tensor,
+        mode_str: str,
+        epoch_ndx,
     ) -> torch.Tensor:
         (
             input_t,
             label_t,
-            _,
         ) = batch_tup
 
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
 
+
         logits_g = self.model(input_g)
         probability_g = torch.softmax(logits_g, dim=1)
-        # probability_g=torch.exp(logits_g)/torch.sum(torch.exp(logits_g), 1)[:, None]
-
-        # HINGE LOSS
-        # loss_func=nn.HingeEmbeddingLoss()
-        # loss_g=loss_func(logits_g,label_g)
-
-        # CROSS ENTROPY LOSS
         loss_func = nn.CrossEntropyLoss()
-        loss_g = loss_func(logits_g, label_g[:, 1])
+        loss_g = loss_func(logits_g, label_g)
 
         start_ndx = batch_ndx * batch_size
         end_ndx = start_ndx + label_t.size(0)
 
-        metrics_g[METRICS_LABEL_NDX, start_ndx:end_ndx] = label_g[:, 1]
+        metrics_g[METRICS_LABEL_NDX, start_ndx:end_ndx] = label_g
         metrics_g[METRICS_PRED_NDX, start_ndx:end_ndx] = probability_g[:, 1]
         metrics_g[METRICS_LOSS_NDX, start_ndx:end_ndx] = loss_g
 
@@ -375,10 +412,7 @@ class NoduleTrainingApp:
             )
         )
         self.logger.info(
-            (
-                "E{} {:8} {loss/neg:.8f} loss, "
-                + "{correct/neg:-5.1f}% correct ({neg_correct:} of {neg_count:})"
-            ).format(
+            ("E{} {:8}" + "{correct/neg:-5.1f}% correct ({neg_correct:} of {neg_count:})").format(
                 epoch_ndx,
                 mode_str + "_neg",
                 neg_correct=neg_correct,
@@ -387,10 +421,7 @@ class NoduleTrainingApp:
             )
         )
         self.logger.info(
-            (
-                "E{} {:8} {loss/pos:.8f} loss, "
-                + "{correct/pos:-5.1f}% correct ({pos_correct:} of {pos_count:})"
-            ).format(
+            ("E{} {:8}" + "{correct/pos:-5.1f}% correct ({pos_correct:} of {pos_count:})").format(
                 epoch_ndx,
                 mode_str + "_pos",
                 pos_correct=pos_correct,
@@ -408,68 +439,3 @@ class NoduleTrainingApp:
             self.writer.add_scalar(f"{name}/{mode_str}", value, epoch_ndx)
 
         return metrics_dict
-
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     mp.set_start_method("spawn")
-#     parser.add_argument(
-#         "--batch-size",
-#         help="Batch size to use for training",
-#         default=32,
-#         type=int,
-#     )
-#     parser.add_argument(
-#         "--num-workers",
-#         help="Number of worker processes for background data loading",
-#         default=4,
-#         type=int,
-#     )
-#     parser.add_argument(
-#         "--epochs",
-#         help="Number of epochs to train for",
-#         default=50,
-#         type=int,
-#     )
-#     parser.add_argument(
-#         "--balanced",
-#         help="Balance the training data to half positive, half negative.",
-#         action="store_true",
-#         default=False,
-#     )
-#     parser.add_argument(
-#         "--affine-prob", help="Probability of affine transform", type=float, default=0.75
-#     )
-#     parser.add_argument("--translate", help="translation amount", type=int, default=15)
-#     parser.add_argument("--scale", help="scale amount", type=float, default=0.15)
-#     parser.add_argument("--padding", help="augmentation padding mode", default="border")
-#     parser.add_argument(
-#         "--dilate",
-#         type=int,
-#         help="Dilation in MM",
-#     )
-#     parser.add_argument("--resample", type=int, help="resample size")
-#     parser.add_argument(
-#         "--finetune",
-#         help="Start finetuning from this model.",
-#         default="",
-#     )
-
-#     parser.add_argument(
-#         "--finetune-depth",
-#         help="Number of blocks (counted from head) to include in finetuning",
-#         type=int,
-#         default=1,
-#     )
-#     parser.add_argument(
-#         "--k-folds", help="Number of cross-validation folds.", type=int, default=1, required=False
-#     )
-#     parser.add_argument("--learn-rate", help="Learn rate", type=float, default=1e-3)
-#     parser.add_argument("--momentum", type=float, default=0.99)
-#     parser.add_argument("--weight-decay", type=float, default=1e-4)
-#     parser.add_argument("--model", type=str, required=True)
-#     parser.add_argument("--device", required=True, type=int)
-#     parser.add_argument("--tag", required=False, default="", help="Tag string for logging")
-#     parser.add_argument("--val-ratio", required=False, type=float, default=0.2)
-#     cli_args = parser.parse_args()
-#     NoduleTrainingApp(cli_args).main()

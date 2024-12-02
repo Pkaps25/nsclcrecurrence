@@ -14,14 +14,13 @@ def exclude_non_segmented_nodule(nod_id, center):
     seg = sitk.ReadImage(seg_file)
     labeled_image = sitk.ConnectedComponent(seg)
     index = seg.TransformPhysicalPointToIndex(center)
-    index_box = [slice(x - 10, x + 10) for x in index]
-    center_box = sitk.GetArrayFromImage(labeled_image[index_box])
-    segs = np.unique(center_box)
+    print(index)
+    seg = labeled_image.GetPixel(*index)
     # extract the segmentation for the nodule given center
-    return len(segs) == 0 or len(segs) > 2 or (len(segs) == 1 and segs[0] == 0)
+    return seg == 0
 
 
-annots = pd.read_csv("annots_michelle.csv")
+annots = pd.read_csv("/home/kaplinsp/ct_lung_class/ct_lung_class/annots_michelle.csv")
 exclude = []
 for nod_id, center in annots[["PT #", "Coordinates "]].values:
     try:
