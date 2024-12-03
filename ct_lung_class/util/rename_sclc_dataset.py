@@ -34,7 +34,7 @@ def get_label(path):
 )
 def process_annotations(input_dir, output_file):
     """
-    Processes .nrrd files and their corresponding .fcsv.gz files 
+    Processes .nrrd files and their corresponding .fcsv.gz files
     to generate a transformed annotations CSV.
     """
     cols = [

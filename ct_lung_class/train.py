@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 import sys
 from typing import List, Optional, Tuple
+from datasets import DatasetItem
 import monai
 
 import numpy as np
@@ -14,13 +15,15 @@ from constants import (
     METRICS_SIZE,
 )
 from image import NoduleInfoTuple
-from datasets import DatasetItem, NoduleDataset
+from datasets import NoduleDataset
 
 # from medmnist_model import load_mendminst_resnet50, load_mendminst_resnet18
 from torch.optim import Adam, SGD
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from pretrained import create_pretrained_medical_resnet
-from luna_model import create_pretrained_luna
+from pretrained.resnet import create_pretrained_medical_resnet
+from pretrained.luna_model import create_pretrained_luna
+
+# from luna_model import create_pretrained_luna
 from util.logconf import logging
 from util.util import enumerateWithEstimate  # importstr
 from torch.utils.tensorboard import SummaryWriter
@@ -328,7 +331,6 @@ class NoduleTrainingApp:
 
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
-
 
         logits_g = self.model(input_g)
         probability_g = torch.softmax(logits_g, dim=1)
