@@ -24,8 +24,6 @@ from util.logconf import logging
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 
-# bb_cache = getCache("box")
-
 DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 
@@ -61,38 +59,22 @@ def resample_image(input_image: sitk.Image, output_size: Tuple[int, int, int]) -
     return resample.Execute(input_image)
 
 
-# @image_cache.memoize(typed=True)
 @ (getCache("fixedsize")).memoize(typed=True)
-def getCtRawNodule(
+def get_fixed_size_nodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
-    preprocess: bool,
-    dilation: int,
     resample_size: int,
     box_size: List[int],
 ) -> torch.Tensor:
     log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
-    # raw_nodule = ct.extract_bounding_box_nodule(preprocess=preprocess, dilation_mm=dilation)
-    # resampled = resample_image(raw_nodule, resample_size)
-
-    # raw_nodule, raw_segmentation = ct.extract_fixed_size_nodule(box_size, True)
     raw_nodule = ct.extract_fixed_size_nodule(box_size, True)
-    try:
-        resampled_nodule = resample_image(raw_nodule, resample_size)
-        # resampled_segmentation = resample_image(raw_segmentation, resample_size)
-    except Exception as e:
-        print(nodule_file_path)
-        raise
-
+    resampled_nodule = resample_image(raw_nodule, resample_size)
     nodule_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_nodule)).unsqueeze(0)
-    # seg_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_segmentation)).unsqueeze(0)
-    # return torch.cat([nodule_tensor, seg_tensor]).to(torch.float32)
     return nodule_tensor.to(torch.float32)
 
 
-# @image_cache.memoize(typed=True)
 @ (getCache("box")).memoize(typed=True)
 def getCtRawNodule(
     nodule_file_path: str,
@@ -178,8 +160,6 @@ class NoduleDataset(Dataset):
 
     def __getitem__(self, ndx) -> DatasetItem:
         noduleInfo_tup = self.noduleInfo_list[ndx]
-        # if not noduleInfo_tup.is_nodule:
-        #     return torch.from_numpy(random_space_in_image(noduleInfo_tup, resample_size=self.resample)).unsqueeze(0).to(torch.float32), noduleInfo_tup.is_nodule
 
         if self.augmentation_dict:
             nodule_t = getCtAugmentedNodule(
@@ -200,7 +180,6 @@ class NoduleDataset(Dataset):
                 resample_size=self.resample,
                 box_size=self.box_size,
             )
-            # nodule_t = nodule_t.unsqueeze(0)
 
         assert not torch.any(torch.isnan(nodule_t)) and torch.all(
             torch.isfinite(nodule_t)

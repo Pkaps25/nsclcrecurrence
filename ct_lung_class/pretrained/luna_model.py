@@ -77,8 +77,6 @@ class LunaModel(nn.Module):
 
 def create_pretrained_luna():
     model = LunaModel()
-    state = torch.load(
-        LUNA_PATH
-    )
+    state = torch.load(LUNA_PATH)
     model.load_state_dict(state["model_state"])
     return model

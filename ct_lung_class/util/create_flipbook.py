@@ -31,7 +31,8 @@ from pypdf import PdfWriter
 )
 def process_nodules(output_dir, merged_pdf, datasets):
     """
-    Processes nodules, generates individual PDFs with their visualizations, and merges them into a single PDF.
+    Processes nodules, generates individual PDFs with their visualizations,
+    and merges them into a single PDF.
     """
     nodules = getNoduleInfoList(datasets)
 
