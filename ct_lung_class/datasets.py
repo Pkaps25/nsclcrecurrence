@@ -1,7 +1,8 @@
 import copy
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 import SimpleITK as sitk
 
+import monai
 import torch
 from torch.utils.data import Dataset
 from monai.transforms import Compose, RandAffine, RandFlip, RandGaussianNoise
@@ -28,7 +29,7 @@ DatasetItem = Tuple[torch.Tensor, torch.Tensor, int]
 
 
 def getNoduleInfoList(
-    dataset_names: Optional[List[str]] = ["r17", "prasad"]
+    dataset_names: Optional[List[str]] = ["r17", "prasad"],
 ) -> List[NoduleInfoTuple]:
     mapping = {
         "r17": R17SampleGeneratorStrategy,
@@ -58,24 +59,62 @@ def resample_image(input_image: sitk.Image, output_size: Tuple[int, int, int]) -
     resample.SetInterpolator(sitk.sitkBSpline)
     return resample.Execute(input_image)
 
+def resample_image_to_thickness(input_image: sitk.Image, output_spacing: Tuple[float, float, float]) -> sitk.Image:
+    resample = sitk.ResampleImageFilter()
+    original_size = input_image.GetSize()
+    original_spacing = input_image.GetSpacing()
+    # print(original_size, original_spacing, output_spacing)
+    output_size = [
+        int(original_size[i] * original_spacing[i] / output_spacing[i]) for i in range(len(original_size))
+    ]
+    resample.SetOutputSpacing(output_spacing)
+    resample.SetSize(output_size)
+    resample.SetOutputDirection(input_image.GetDirection())
+    resample.SetOutputOrigin(input_image.GetOrigin())
+    resample.SetTransform(sitk.Transform())
+    resample.SetDefaultPixelValue(0)
+    resample.SetInterpolator(sitk.sitkBSpline)
+    return resample.Execute(input_image)
 
-@ (getCache("fixedsize")).memoize(typed=True)
+
+@ (getCache("fixedsize-noresample")).memoize(typed=True)
 def get_fixed_size_nodule(
     nodule_file_path: str,
     image_type: NoduleImage,
     center_lps: Coord3D,
     resample_size: int,
     box_size: List[int],
+    resample_thickness: int = [1., 1., 1.],
 ) -> torch.Tensor:
     log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
     raw_nodule = ct.extract_fixed_size_nodule(box_size, True)
-    resampled_nodule = resample_image(raw_nodule, resample_size)
+    resampled_nodule = resample_image_to_thickness(raw_nodule, resample_thickness)
     nodule_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_nodule)).unsqueeze(0)
+    transform = monai.transforms.ResizeWithPadOrCrop(resample_size, method="symmetric", mode="constant", lazy=False)
+    nodule_tensor = transform(nodule_tensor)
     return nodule_tensor.to(torch.float32)
 
 
-@ (getCache("box")).memoize(typed=True)
+# @ (getCache("box")).memoize(typed=True)
+# def getCtRawNodule(
+#     nodule_file_path: str,
+#     image_type: NoduleImage,
+#     center_lps: Coord3D,
+#     preprocess: bool,
+#     dilation: int,
+#     resample_size: int,
+#     box_size: List[int],
+# ) -> torch.Tensor:
+#     log.info(f"Slicing nodule from image for {nodule_file_path}")
+#     ct: NoduleImage = image_type(nodule_file_path, center_lps)
+#     raw_nodule = ct.extract_bounding_box_nodule(
+#         preprocess=preprocess, dilation_mm=dilation, box_size=box_size
+#     )
+#     resampled = resample_image(raw_nodule, resample_size)
+#     return torch.from_numpy(sitk.GetArrayFromImage(resampled)).to(torch.float32).unsqueeze(0)
+
+@ (getCache("box-resampled")).memoize(typed=True)
 def getCtRawNodule(
     nodule_file_path: str,
     image_type: NoduleImage,
@@ -90,8 +129,11 @@ def getCtRawNodule(
     raw_nodule = ct.extract_bounding_box_nodule(
         preprocess=preprocess, dilation_mm=dilation, box_size=box_size
     )
-    resampled = resample_image(raw_nodule, resample_size)
-    return torch.from_numpy(sitk.GetArrayFromImage(resampled)).to(torch.float32).unsqueeze(0)
+    resampled_nodule = resample_image_to_thickness(raw_nodule, [1,1,1])
+    nodule_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_nodule)).unsqueeze(0)
+    transform = monai.transforms.ResizeWithPadOrCrop(resample_size, method="symmetric", mode="constant", lazy=False)
+    nodule_tensor = transform(nodule_tensor)
+    return nodule_tensor.to(torch.float32)
 
 
 def getCtAugmentedNodule(
@@ -101,16 +143,26 @@ def getCtAugmentedNodule(
     dilation: int,
     resample_size: Tuple[int, int, int],
     box_size: List[int],
+    fixed_size: bool = False,
 ) -> Tuple[Image, Slice3D]:
-    ct_chunk = getCtRawNodule(
-        noduleInfoTup.file_path,
-        noduleInfoTup.image_type,
-        noduleInfoTup.center_lps,
-        preprocess=preprocess,
-        dilation=dilation,
-        resample_size=resample_size,
-        box_size=box_size,
-    )
+    if fixed_size:
+        ct_chunk = get_fixed_size_nodule(
+            noduleInfoTup.file_path,
+            noduleInfoTup.image_type,
+            noduleInfoTup.center_lps,
+            resample_size,
+            box_size
+        )
+    else:
+        ct_chunk = getCtRawNodule(
+            noduleInfoTup.file_path,
+            noduleInfoTup.image_type,
+            noduleInfoTup.center_lps,
+            preprocess=preprocess,
+            dilation=dilation,
+            resample_size=resample_size,
+            box_size=box_size,
+        )
     rand_affine = RandAffine(
         mode=("bilinear"),
         prob=augmentation_dict["affine_prob"],
@@ -130,15 +182,18 @@ class NoduleDataset(Dataset):
         nodule_info_list,
         dilate,
         resample,
-        box_size,
+        box_size: Union[List[int], int],
         isValSet_bool=None,
         augmentation_dict=None,
+        fixed_size=False,
     ):
         self.augmentation_dict = augmentation_dict
         self.noduleInfo_list = copy.copy(nodule_info_list)
         self.dilate = dilate
         self.resample = resample
-        self.box_size = box_size
+        # print(box_size)
+        self.box_size = [box_size] * 3 if isinstance(box_size, int) else box_size
+        self.fixed_size = fixed_size
 
         self.negative_list = [nt for nt in self.noduleInfo_list if not nt.is_nodule]
 
@@ -169,17 +224,27 @@ class NoduleDataset(Dataset):
                 dilation=self.dilate,
                 resample_size=self.resample,
                 box_size=self.box_size,
+                fixed_size=self.fixed_size
             )
         else:
-            nodule_t = getCtRawNodule(
-                noduleInfo_tup.file_path,
-                noduleInfo_tup.image_type,
-                noduleInfo_tup.center_lps,
-                preprocess=True,
-                dilation=self.dilate,
-                resample_size=self.resample,
-                box_size=self.box_size,
-            )
+            if self.fixed_size:
+                nodule_t = get_fixed_size_nodule(
+                    noduleInfo_tup.file_path,
+                    noduleInfo_tup.image_type,
+                    noduleInfo_tup.center_lps,
+                    self.resample,
+                    self.box_size,
+                )
+            else:
+                nodule_t = getCtRawNodule(
+                    noduleInfo_tup.file_path,
+                    noduleInfo_tup.image_type,
+                    noduleInfo_tup.center_lps,
+                    preprocess=True,
+                    dilation=self.dilate,
+                    resample_size=self.resample,
+                    box_size=self.box_size,
+                )
 
         assert not torch.any(torch.isnan(nodule_t)) and torch.all(
             torch.isfinite(nodule_t)

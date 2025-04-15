@@ -1,4 +1,5 @@
 import argparse
+from typing import Union, List
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
@@ -45,7 +46,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
         "--model", type=str, choices=["densenet", "resnet", "luna", "medmnist18", "medmnist50"]
     )
     parser.add_argument("--tag", required=False, default="", help="Tag string for logging")
-    parser.add_argument("--val-ratio", required=False, type=float, default=0.2)
+    parser.add_argument("--val-ratio", required=False, type=float, default=0.15)
+    parser.add_argument("--test-ratio", type=float)
     parser.add_argument("--device", required=False, type=int)
     parser.add_argument(
         "--dataset", help="dataset choices to add", nargs="+", choices=["prasad", "r17", "sclc"]
@@ -54,5 +56,6 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--finetune-depth", help="Number of blocks from head to finetune", default=0, type=int
     )
-    parser.add_argument("--box-size", help="Box size for fixed size boxes fallback", type=int)
+    parser.add_argument("--box-size", help="Box size for fixed size boxes fallback", type=int, nargs="+")
+    parser.add_argument("--fixed-size", help="Use a fixed size box", action="store_true")
     return parser

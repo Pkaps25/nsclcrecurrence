@@ -14,6 +14,9 @@ import numpy as np
 
 from constants import EXCLUDE_NODULE_FILES, CT_AIR, CT_BONE, EXCLUDE_PRASAD_IDS
 
+class NoSeg(Exception):
+    pass
+
 
 def read_pickle(path):
     with open(path, "rb") as f:
@@ -67,7 +70,7 @@ class NoduleImage(ABC):
 
     import SimpleITK as sitk
 
-    def extract_fixed_size_nodule(self, box_size: list, preprocess: bool = True):
+    def extract_fixed_size_nodule(self, box_size: List[int], preprocess: bool = True):
         """
         Extracts a bounding box from the CT and segmentation images, ensuring spatial alignment.
 
@@ -93,6 +96,7 @@ class NoduleImage(ABC):
             center = image.TransformPhysicalPointToIndex(point)
 
             # Calculate half the box size in pixels for each dimension
+            # print(box_size, spacing)
             half_box_size_pixels = [int((box_size[i] / spacing[i]) / 2) for i in range(3)]
 
             # Calculate the starting and ending indices for the box
@@ -161,13 +165,14 @@ class NoduleImage(ABC):
         return int(np.max(segs))
 
     def extract_bounding_box_nodule(
-        self, preprocess: bool, dilation_mm: int, box_size: int
+        self, preprocess: bool, dilation_mm: int, box_size: List[int]
     ) -> sitk.Image:
         segmentation_image = self.nodule_segmentation_image()
         labeled_segmentation_image = sitk.ConnectedComponent(segmentation_image)
         segmentation_id = self.get_connected_component_id_for_nodule(labeled_segmentation_image)
         if segmentation_id == 0:
-            return self.extract_fixed_size_nodule([box_size] * 3, True)
+            # raise NoSeg
+            return self.extract_fixed_size_nodule(box_size, True)
 
         label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
         subset_segmentation = sitk.BinaryThreshold(
@@ -276,11 +281,12 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
                 nod_name = row[0]
                 file_path = f"/data/etay/lung_hist_dat/original_dat_nrrds/nod{nod_name}.nrrd"
                 center = get_coord_csv(row[4], row[5], row[6])
-                if (int(nod_name), center) in EXCLUDE_NODULE_FILES:
-                    logger.info(f"EXCLUDING: {nod_name}")
-                    continue
+                # if (int(nod_name), center) in EXCLUDE_NODULE_FILES:
+                #     logger.info(f"EXCLUDING: {nod_name}")
+                #     continue
 
-                label = int(row[7])
+                # label = int(row[7])
+                label = 0
                 nodule_infos.append(
                     NoduleInfoTuple(label, nod_name, center, file_path, NRRDNodule)
                 )
@@ -291,11 +297,14 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
 class SCLCSampleGenerator(SampleGeneratorStrategy):
 
     def generate_nodule_info() -> List[NoduleInfoTuple]:
-        coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations_transformed.csv"
+        # coord_file = "/home/kaplinsp/ct_lung_class/ct_lung_class/annotations_transformed.csv"
+        coord_file = "/home/kaplinsp/ct_lung_class/annotations-sclc.csv"
 
         exclude_paths = ["/data/kaplinsp/transformation/A114.nrrd"]
         coord_df = pd.read_csv(coord_file, index_col=False)
+        
         coord_df = coord_df[(coord_df["label"] != 2) & (~coord_df["path"].isin(exclude_paths))]
+        
         return list(
             coord_df.apply(
                 lambda row: NoduleInfoTuple(
@@ -308,6 +317,8 @@ class SCLCSampleGenerator(SampleGeneratorStrategy):
                 axis=1,
             ).to_numpy()
         )
+        
+    
 
 
 class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):

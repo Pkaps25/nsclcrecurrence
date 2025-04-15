@@ -1,7 +1,11 @@
 import os
 from datetime import datetime
+import pickle
+import random
 import sys
 from typing import List, Optional, Tuple
+
+from sklearn.metrics import auc, roc_curve
 from datasets import DatasetItem
 import monai
 
@@ -104,6 +108,7 @@ class NoduleTrainingApp:
             dilate=self.cli_args.dilate,
             resample=self.cli_args.resample,
             box_size=self.cli_args.box_size,
+            fixed_size=self.cli_args.fixed_size
         )
         labels = np.array([s.is_nodule for s in nodule_list])
         class_counts = np.bincount(labels)
@@ -138,6 +143,7 @@ class NoduleTrainingApp:
             dilate=self.cli_args.dilate,
             resample=self.cli_args.resample,
             box_size=self.cli_args.box_size,
+            fixed_size=self.cli_args.fixed_size
         )
 
         val_dl = DataLoader(
@@ -152,7 +158,8 @@ class NoduleTrainingApp:
         return val_dl
 
     def init_logs_outputs(self):
-        model_output_dir = os.path.join(SETTINGS["model_dir"], self.run_dir)
+        model_output_dir = os.path.join(SETTINGS["model_dir"], f"{self.run_dir}-{self.tag}-{self.local_rank}")
+        self.model_output_dir = model_output_dir
         if not os.path.exists(model_output_dir):
             os.mkdir(model_output_dir)
 
@@ -174,6 +181,15 @@ class NoduleTrainingApp:
         assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) == len(
             dataset
         ), "Using all samples in dataset"
+        
+    def save_datasets(self, train_set: List[NoduleInfoTuple], test_set: List[NoduleInfoTuple]):
+        train_ids = [(nod.file_path, nod.center_lps) for nod in train_set]
+        with open(os.path.join(self.model_output_dir, "train.pkl"), "wb") as f:
+            pickle.dump(train_ids, f)
+        
+        val_ids = [(nod.file_path, nod.center_lps) for nod in test_set]
+        with open(os.path.join(self.model_output_dir, "val.pkl"), "wb") as f:
+            pickle.dump(val_ids, f)
 
     def main(
         self,
@@ -192,8 +208,11 @@ class NoduleTrainingApp:
         )
 
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
+        self.local_rank = local_rank
         self.init_logs_outputs()
         train_set, test_set = dataset[local_rank] if self.cli_args.k_folds > 1 else dataset[0]
+        self.save_datasets(train_set, test_set)
+        
         # print(train_set, test_set)
         train_dl = self.init_train_dataloader(train_set)
         val_dl = self.init_val_dataloader(test_set)
@@ -202,7 +221,7 @@ class NoduleTrainingApp:
         self.writer = SummaryWriter(
             os.path.join(
                 f"{SETTINGS['tensorboard_dir']}",
-                f"{self.time_str}_{self.tag}_{executed}_{local_rank}",
+                f"{self.time_str}_{self.tag}_{local_rank}",
             )
         )
         self.train(train_dl, val_dl)
@@ -225,42 +244,60 @@ class NoduleTrainingApp:
             self.log_metrics(epoch_ndx, "val", valMetrics_t)
             if self.scheduler:
                 self.scheduler.step(epoch_ndx)
-            # it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
+            
+            it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
 
-            # val_f1 = it_val_metric["pr/f1_score"]
-            # val_accuracy = it_val_metric["correct/all"]
-            # val_loss = it_val_metric["loss/all"]
+            val_f1 = it_val_metric["pr/f1_score"]
+            val_accuracy = it_val_metric["correct/all"]
+            val_loss = it_val_metric["loss/all"]
+            val_roc = it_val_metric["pr/auc_roc"]
+            
+            best_f1 = 0
+            best_accuracy = 0,
+            best_loss = float('inf')
+            best_roc = 0
+            
+            if val_roc > best_roc:
+                best_roc = val_roc
+                torch.save(
+                    {
+                        "epoch": epoch_ndx,
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                    },
+                    os.path.join(self.model_output_dir, "best_auc_model.pth"),
+                )
 
-            # if val_f1 > best_f1:  # best val F1
-            #     best_f1 = val_f1
-            #     torch.save(
-            #         {
-            #             "epoch": epoch_ndx,
-            #             "model_state_dict": self.model.state_dict(),
-            #             "optimizer_state_dict": self.optimizer.state_dict(),
-            #         },
-            #         os.path.join(OUTPUT_PATH, self.run_dir, "best_f1_model.pth"),
-            #     )
-            # if val_accuracy > best_accuracy:  # best val accuracy
-            #     best_accuracy = val_accuracy
-            #     torch.save(
-            #         {
-            #             "epoch": epoch_ndx,
-            #             "model_state_dict": self.model.state_dict(),
-            #             "optimizer_state_dict": self.optimizer.state_dict(),
-            #         },
-            #         os.path.join(OUTPUT_PATH, self.run_dir, "best_accuracy_model.pth"),
-            #     )
-            # if val_loss < best_loss:  # best val loss
-            #     best_loss = val_loss
-            #     torch.save(
-            #         {
-            #             "epoch": epoch_ndx,
-            #             "model_state_dict": self.model.state_dict(),
-            #             "optimizer_state_dict": self.optimizer.state_dict(),
-            #         },
-            #         os.path.join(OUTPUT_PATH, self.run_dir, "best_loss_model.pth"),
-            #     )
+            if val_f1 > best_f1:  # best val F1
+                best_f1 = val_f1
+                torch.save(
+                    {
+                        "epoch": epoch_ndx,
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                    },
+                    os.path.join(self.model_output_dir, "best_f1_model.pth"),
+                )
+            if val_accuracy > best_accuracy:  # best val accuracy
+                best_accuracy = val_accuracy
+                torch.save(
+                    {
+                        "epoch": epoch_ndx,
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                    },
+                    os.path.join(self.model_output_dir, "best_accuracy_model.pth"),
+                )
+            if val_loss < best_loss:  # best val loss
+                best_loss = val_loss
+                torch.save(
+                    {
+                        "epoch": epoch_ndx,
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                    },
+                    os.path.join(self.model_output_dir, "best_loss_model.pth"),
+                )
 
     def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
         self.model.train()
@@ -399,6 +436,10 @@ class NoduleTrainingApp:
         metrics_dict["pr/f1_score"] = np.divide(
             2 * (precision * recall), precision + recall, where=(precision + recall) != 0
         )
+        
+        fpr, tpr, _ = roc_curve(metrics[METRICS_LABEL_NDX].detach().numpy(), metrics[METRICS_PRED_NDX].detach().numpy())
+        roc_auc = auc(fpr, tpr)
+        metrics_dict["pr/auc_roc"] = roc_auc
 
         self.logger.info(
             (
@@ -406,7 +447,8 @@ class NoduleTrainingApp:
                 + "{correct/all:-5.1f}% correct, "
                 + "{pr/precision:.4f} precision, "
                 + "{pr/recall:.4f} recall, "
-                + "{pr/f1_score:.4f} f1 score"
+                + "{pr/f1_score:.4f} f1 score "
+                + "{pr/auc_roc:.2f} auc-roc "
             ).format(
                 epoch_ndx,
                 mode_str,
