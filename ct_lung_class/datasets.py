@@ -18,7 +18,7 @@ from image import (
     SCLCSampleGenerator,
     Slice3D,
     Image,
-    ZaraNoduleGenerator
+    ZaraNoduleGenerator,
 )
 from util.disk import getCache
 from util.logconf import logging
@@ -92,7 +92,7 @@ def get_fixed_size_nodule(
     box_size: List[int],
     resample_thickness: int = [1.0, 1.0, 1.0],
 ) -> torch.Tensor:
-    """"Extracts a BB, resamples to fixed thickness, crops/pads"""
+    """ "Extracts a BB, resamples to fixed thickness, crops/pads"""
     log.info(f"Slicing nodule from image for {nodule_file_path}")
     ct: NoduleImage = image_type(nodule_file_path, center_lps)
     raw_nodule = ct.extract_fixed_size_nodule(box_size, True)
@@ -101,9 +101,7 @@ def get_fixed_size_nodule(
     # transform = monai.transforms.ResizeWithPadOrCrop(
     #     resample_size, method="symmetric", mode="constant", lazy=False
     # )
-    transform = monai.transforms.Resize(
-        resample_size, mode="bilinear"
-    )
+    transform = monai.transforms.Resize(resample_size, mode="bilinear")
     nodule_tensor = transform(nodule_tensor)
     return nodule_tensor.to(torch.float32)
 
@@ -163,12 +161,12 @@ def getCtRawNodule(
             preprocess=preprocess, dilation_mm=dilation, box_size=box_size, seg_path=seg_path
         )
     except:
-        return get_fixed_size_nodule(nodule_file_path, image_type, center_lps, resample_size, box_size, resample_size)
+        return get_fixed_size_nodule(
+            nodule_file_path, image_type, center_lps, resample_size, box_size, resample_size
+        )
     resampled_nodule = resample_image_to_thickness(raw_nodule, [1, 1, 1])
     nodule_tensor = torch.from_numpy(sitk.GetArrayFromImage(resampled_nodule)).unsqueeze(0)
-    transform = monai.transforms.Resize(
-        resample_size, mode="trilinear"
-    )
+    transform = monai.transforms.Resize(resample_size, mode="trilinear")
     nodule_tensor = transform(nodule_tensor)
     return nodule_tensor.to(torch.float32)
 
@@ -201,7 +199,7 @@ def getCtAugmentedNodule(
             box_size=box_size,
             seg_path=noduleInfoTup.seg_file,
         )
-    
+
     rand_affine = RandAffine(
         mode=("bilinear"),
         prob=augmentation_dict["affine_prob"],
@@ -283,9 +281,8 @@ class NoduleDataset(Dataset):
                     dilation=self.dilate,
                     resample_size=self.resample,
                     box_size=self.box_size,
-                    seg_path=noduleInfo_tup.seg_file
+                    seg_path=noduleInfo_tup.seg_file,
                 )
-
 
         assert not torch.any(torch.isnan(nodule_t)) and torch.all(
             torch.isfinite(nodule_t)
