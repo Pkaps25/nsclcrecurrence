@@ -1,8 +1,11 @@
-from typing import Any
+from typing import List, Optional
 from lightning import LightningDataModule
 
+from datasets import NoduleDataset
+from torch.utils.data import DataLoader
 
-class SCLCDataset(LightningDataModule):
+
+class SCLCDataModule(LightningDataModule):
     
     @staticmethod
     def add_dataset_specific_args(parent_parser):
@@ -43,7 +46,99 @@ class SCLCDataset(LightningDataModule):
         )
         return parent_parser
     
-    def __init__(self, **kwargs: Any):
+    def __init__(
+            self, 
+            train_set: List,
+            val_set: List,
+            test_set: Optional[List] = None,
+        ):
         super().__init__()
         self.save_hyperparameters()
+
+        self.train_set = train_set
+        self.val_set = val_set
+        self.test_set = test_set
+
+        self.augmentation_dict = {
+            augmentation: getattr(self.hparams, augmentation)
+            for augmentation in ["affine_prob", "translate", "scale", "padding"]
+        }
         
+
+    def setup(self, stage):
+
+        self.train_ds = NoduleDataset(
+            nodule_info_list=self.train_set,
+            isValSet_bool=False,
+            augmentation_dict=self.augmentation_dict,
+            dilate=self.hparams.dilate,
+            resample=self.hparams.resample,
+            box_size=self.hparams.box_size,
+            fixed_size=self.hparams.fixed_size,
+        )
+
+        self.val_ds = NoduleDataset(
+            nodule_info_list=self.val_set,
+            isValSet_bool=True,
+            dilate=self.hparams.dilate,
+            resample=self.hparams.resample,
+            box_size=self.hparams.box_size,
+            fixed_size=self.hparams.fixed_size,
+        )
+
+        if self.test_set:
+            self.test_ds = NoduleDataset(
+                nodule_info_list=self.test_ds,
+                isValSet_bool=True,
+                dilate=self.hparams.dilate,
+                resample=self.hparams.resample,
+                box_size=self.hparams.box_size,
+                fixed_size=self.hparams.fixed_size,
+            )
+
+        if self.hparams.oversample:
+            import numpy as np
+            from torch.utils.data import WeightedRandomSampler
+            labels = np.array([n.is_nodule for n in self.train_set])
+            class_weights = 1.0 / np.bincount(labels)
+            sample_weights = class_weights[labels]
+            self.train_sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True
+            )
+
+        
+    def train_dataloader(self):
+        kwargs = {"sampler": self.train_sampler} if self.train_sampler else {"shuffle": True}
+        return DataLoader(
+            self.train_ds,
+            batch_size=self.hparams.batch_size,
+            num_workers=4,
+            pin_memory=self.use_cuda,
+            drop_last=False,
+            **kwargs,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_ds,
+            batch_size=self.hparams.batch_size,
+            num_workers=4,
+            pin_memory=self.use_cuda,
+            drop_last=False,
+            shuffle=False,
+        )
+
+    def test_dataloader(self):
+        if not self.test_ds:
+            return None
+        
+        return DataLoader(
+            self.test_ds,
+            batch_size=self.hparams.batch_size,
+            num_workers=4,
+            pin_memory=self.use_cuda,
+            drop_last=False,
+            shuffle=False,
+        )
