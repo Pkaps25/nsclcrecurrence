@@ -1,3 +1,7 @@
-tensorboard_dir: /data/kaplinsp/tensorboard/transformation-classification
+# tensorboard_dir: /data/kaplinsp/tensorboard/sclc-kfold
+# tensorboard_dir: /data/kaplinsp/tensorboard/sclc-fixedsize
+# tensorboard_dir: /data/kaplinsp/tensorboard/sclc-heldout
+# tensorboard_dir: /data/kaplinsp/tensorboard/papillary-kfold
+tensorboard_dir: /data/kaplinsp/tensorboard/zara
 log_dir: /data/kaplinsp/logs
 model_dir: /data/kaplinsp/models
