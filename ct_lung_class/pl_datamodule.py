@@ -1,8 +1,12 @@
+import os
 from typing import List, Optional
 from lightning import LightningDataModule
 
+from image import NoduleInfoTuple
 from datasets import NoduleDataset
 from torch.utils.data import DataLoader
+
+import pickle
 
 
 class SCLCDataModule(LightningDataModule):
@@ -47,13 +51,29 @@ class SCLCDataModule(LightningDataModule):
         return parent_parser
     
     def __init__(
-            self, 
-            train_set: List,
-            val_set: List,
-            test_set: Optional[List] = None,
-        ):
+        self,
+        train_set: List,
+        val_set: List,
+        box_size: List[int],
+        dataset: List[str],
+        fixed_size: bool,
+        test_set: Optional[List] = None,
+        batch_size: int = 16,
+        val_ratio: Optional[float] = 0.15,
+        test_ratio: Optional[float] = 0.15,
+        dilate: Optional[int] = None,
+        affine_prob: float = 0.75,
+        translate: int = 15,
+        scale: float = 0.10,
+        padding: str = "border",
+        k_folds: int = 1,
+        resample: Optional[List[int]] = [65, 65, 65],
+        oversample: bool = False,
+        **kwargs,
+    ):
         super().__init__()
         self.save_hyperparameters()
+        self.use_cuda = True
 
         self.train_set = train_set
         self.val_set = val_set
@@ -65,7 +85,7 @@ class SCLCDataModule(LightningDataModule):
         }
         
 
-    def setup(self, stage):
+    def setup(self, stage=None):
 
         self.train_ds = NoduleDataset(
             nodule_info_list=self.train_set,
@@ -88,7 +108,7 @@ class SCLCDataModule(LightningDataModule):
 
         if self.test_set:
             self.test_ds = NoduleDataset(
-                nodule_info_list=self.test_ds,
+                nodule_info_list=self.test_set,
                 isValSet_bool=True,
                 dilate=self.hparams.dilate,
                 resample=self.hparams.resample,
@@ -110,7 +130,7 @@ class SCLCDataModule(LightningDataModule):
 
         
     def train_dataloader(self):
-        kwargs = {"sampler": self.train_sampler} if self.train_sampler else {"shuffle": True}
+        kwargs = {"sampler": self.train_sampler} if hasattr(self, "train_sampler") else {"shuffle": True}
         return DataLoader(
             self.train_ds,
             batch_size=self.hparams.batch_size,
@@ -142,3 +162,17 @@ class SCLCDataModule(LightningDataModule):
             drop_last=False,
             shuffle=False,
         )
+    
+
+    def save_datasets(self, model_output_dir):
+        train_ids = [(nod.file_path, nod.center_lps) for nod in self.train_set]
+        with open(os.path.join(model_output_dir, "train.pkl"), "wb") as f:
+            pickle.dump(train_ids, f)
+
+        val_ids = [(nod.file_path, nod.center_lps) for nod in self.val_set]
+        with open(os.path.join(model_output_dir, "val.pkl"), "wb") as f:
+            pickle.dump(val_ids, f)
+            
+        test_ids = [(nod.file_path, nod.center_lps) for nod in self.test_set]
+        with open(os.path.join(model_output_dir, "test.pkl"), "wb") as f:
+            pickle.dump(test_ids, f)

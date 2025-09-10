@@ -24,8 +24,9 @@ from datasets import NoduleDataset
 # from medmnist_model import load_mendminst_resnet50, load_mendminst_resnet18
 from torch.optim import Adam, SGD
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from pretrained.resnet import create_pretrained_medical_resnet
+from ct_lung_class.pretrained.medicalnet import create_pretrained_medical_resnet
 from pretrained.luna_model import create_pretrained_luna
+from dino_classifier import VolumeClassifier
 
 # from luna_model import create_pretrained_luna
 from util.logconf import logging
@@ -34,12 +35,16 @@ from torch.utils.tensorboard import SummaryWriter
 from conf import SETTINGS
 
 # from monai.data import TestTimeAugmentation
+from monai.losses import FocalLoss
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 world_size = torch.cuda.device_count()
 
+
+# EPOCH_MAP = [2800, 2450, 3800, 2000, 3400] FOR ABSTRACT 
+EPOCH_MAP = [700, 2000, 1600, 1400, 1800]
 
 class NoduleTrainingApp:
     def __init__(self, cli_args):
@@ -60,13 +65,15 @@ class NoduleTrainingApp:
 
     def init_model(self, model_path: str) -> torch.nn.Module:
         if model_path == "densenet":
-            model = monai.networks.nets.densenet121(
+            model = monai.networks.nets.densenet201(
                 dropout_prob=self.cli_args.dropout, spatial_dims=3, in_channels=1, out_channels=2
             )
         elif model_path == "resnet":
             model, _ = create_pretrained_medical_resnet("/data/kaplinsp/resnet50_medicalnet.tar")
         elif model_path == "luna":
             model = create_pretrained_luna()
+        elif model_path == "dino":
+            model = VolumeClassifier()
         # elif model_path == "medmnist18":
         #     model = load_mendminst_resnet18(self.cli_args.finetune_depth)
         # elif model_path == "medmnist50":
@@ -108,7 +115,7 @@ class NoduleTrainingApp:
             dilate=self.cli_args.dilate,
             resample=self.cli_args.resample,
             box_size=self.cli_args.box_size,
-            fixed_size=self.cli_args.fixed_size
+            fixed_size=self.cli_args.fixed_size,
         )
         labels = np.array([s.is_nodule for s in nodule_list])
         class_counts = np.bincount(labels)
@@ -143,7 +150,7 @@ class NoduleTrainingApp:
             dilate=self.cli_args.dilate,
             resample=self.cli_args.resample,
             box_size=self.cli_args.box_size,
-            fixed_size=self.cli_args.fixed_size
+            fixed_size=self.cli_args.fixed_size,
         )
 
         val_dl = DataLoader(
@@ -158,7 +165,9 @@ class NoduleTrainingApp:
         return val_dl
 
     def init_logs_outputs(self):
-        model_output_dir = os.path.join(SETTINGS["model_dir"], f"{self.run_dir}-{self.tag}-{self.local_rank}")
+        model_output_dir = os.path.join(
+            SETTINGS["model_dir"], f"{self.run_dir}-{self.tag}-{self.local_rank}"
+        )
         self.model_output_dir = model_output_dir
         if not os.path.exists(model_output_dir):
             os.mkdir(model_output_dir)
@@ -171,25 +180,31 @@ class NoduleTrainingApp:
         self.logger.addHandler(file_handler)
 
     def assert_no_leak(
-        self, train_dl: DataLoader, val_dl: DataLoader, dataset: List[NoduleInfoTuple]
+        self, train_dl: DataLoader, val_dl: DataLoader, test_set: List[NoduleInfoTuple], dataset: List[NoduleInfoTuple]
     ):
         trains = set(
             f"{nod.file_path}{nod.center_lps}" for nod in train_dl.dataset.noduleInfo_list
         )
         vals = set(f"{nod.file_path}{nod.center_lps}" for nod in val_dl.dataset.noduleInfo_list)
+        tests = set(f"{nod.file_path}{nod.center_lps}" for nod in test_set)
         assert len(vals.intersection(trains)) == 0, "Data leak, overlapping train and val samples"
-        assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) == len(
+        assert len(vals.intersection(tests)) == 0, "Data leak, val overlapping tests"
+        assert len(val_dl.dataset.noduleInfo_list) + len(train_dl.dataset.noduleInfo_list) + len(test_set) == len(
             dataset
         ), "Using all samples in dataset"
-        
-    def save_datasets(self, train_set: List[NoduleInfoTuple], test_set: List[NoduleInfoTuple]):
+
+    def save_datasets(self, train_set: List[NoduleInfoTuple], val_set: List[NoduleInfoTuple], test_set: List[NoduleInfoTuple]):
         train_ids = [(nod.file_path, nod.center_lps) for nod in train_set]
         with open(os.path.join(self.model_output_dir, "train.pkl"), "wb") as f:
             pickle.dump(train_ids, f)
-        
-        val_ids = [(nod.file_path, nod.center_lps) for nod in test_set]
+
+        val_ids = [(nod.file_path, nod.center_lps) for nod in val_set]
         with open(os.path.join(self.model_output_dir, "val.pkl"), "wb") as f:
             pickle.dump(val_ids, f)
+            
+        test_ids = [(nod.file_path, nod.center_lps) for nod in test_set]
+        with open(os.path.join(self.model_output_dir, "test.pkl"), "wb") as f:
+            pickle.dump(test_ids, f)
 
     def main(
         self,
@@ -197,6 +212,8 @@ class NoduleTrainingApp:
         dataset: List[Tuple[List[NoduleInfoTuple], List[NoduleInfoTuple]]],
         device_count: int,
     ):
+        # self.cli_args.epochs = EPOCH_MAP[local_rank]
+        print(self.cli_args.epochs)
         self.logger.info(f"Starting {type(self).__name__}, {self.cli_args}")
         self.device = self.device if self.device is not None else local_rank % device_count
         self.model = self.init_model(self.cli_args.model)
@@ -210,13 +227,13 @@ class NoduleTrainingApp:
         self.run_dir = f"log_{self.model._get_name()}_{self.time_str}.log"
         self.local_rank = local_rank
         self.init_logs_outputs()
-        train_set, test_set = dataset[local_rank] if self.cli_args.k_folds > 1 else dataset[0]
-        self.save_datasets(train_set, test_set)
-        
+        train_set, val_set, test_set = dataset[local_rank] if self.cli_args.k_folds > 1 else dataset[0]
+        self.save_datasets(train_set, val_set, test_set)
+
         # print(train_set, test_set)
         train_dl = self.init_train_dataloader(train_set)
-        val_dl = self.init_val_dataloader(test_set)
-        self.assert_no_leak(train_dl, val_dl, train_set + test_set)
+        val_dl = self.init_val_dataloader(val_set)
+        self.assert_no_leak(train_dl, val_dl, test_set, train_set + val_set + test_set)
         executed = " ".join(sys.argv)
         self.writer = SummaryWriter(
             os.path.join(
@@ -244,31 +261,62 @@ class NoduleTrainingApp:
             self.log_metrics(epoch_ndx, "val", valMetrics_t)
             if self.scheduler:
                 self.scheduler.step(epoch_ndx)
-            
+
             it_val_metric = self.log_metrics(epoch_ndx, "val", valMetrics_t)
 
             val_f1 = it_val_metric["pr/f1_score"]
             val_accuracy = it_val_metric["correct/all"]
             val_loss = it_val_metric["loss/all"]
             val_roc = it_val_metric["pr/auc_roc"]
-            
-            best_f1 = 0
-            best_accuracy = 0,
-            best_loss = float('inf')
-            best_roc = 0
-            
-            if val_roc > best_roc:
-                best_roc = val_roc
-                torch.save(
-                    {
-                        "epoch": epoch_ndx,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                    },
-                    os.path.join(self.model_output_dir, "best_auc_model.pth"),
-                )
 
-            if val_f1 > best_f1:  # best val F1
+            best_f1 = 0
+            best_accuracy = (0,)
+            best_loss = float("inf")
+            best_roc = 0
+
+            # if val_roc > best_roc:
+            #     best_roc = val_roc
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(self.model_output_dir, "best_auc_model.pth"),
+            #     )
+
+            # if val_f1 > best_f1:  # best val F1
+            #     best_f1 = val_f1
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(self.model_output_dir, "best_f1_model.pth"),
+            #     )
+            # if val_accuracy > best_accuracy:  # best val accuracy
+            #     best_accuracy = val_accuracy
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(self.model_output_dir, "best_accuracy_model.pth"),
+            #     )
+            # if val_loss < best_loss:  # best val loss
+            #     best_loss = val_loss
+            #     torch.save(
+            #         {
+            #             "epoch": epoch_ndx,
+            #             "model_state_dict": self.model.state_dict(),
+            #             "optimizer_state_dict": self.optimizer.state_dict(),
+            #         },
+            #         os.path.join(self.model_output_dir, "best_loss_model.pth"),
+            #     )
+
+            if epoch_ndx >= self.cli_args.epochs - 10:  # best val F1
                 best_f1 = val_f1
                 torch.save(
                     {
@@ -276,9 +324,9 @@ class NoduleTrainingApp:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                     },
-                    os.path.join(self.model_output_dir, "best_f1_model.pth"),
+                    os.path.join(self.model_output_dir, f"best_f1_model_{epoch_ndx}.pth"),
                 )
-            if val_accuracy > best_accuracy:  # best val accuracy
+            if epoch_ndx >= self.cli_args.epochs - 10:  # best val accuracy
                 best_accuracy = val_accuracy
                 torch.save(
                     {
@@ -286,9 +334,9 @@ class NoduleTrainingApp:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                     },
-                    os.path.join(self.model_output_dir, "best_accuracy_model.pth"),
+                    os.path.join(self.model_output_dir, f"best_accuracy_model_{epoch_ndx}.pth"),
                 )
-            if val_loss < best_loss:  # best val loss
+            if epoch_ndx >= self.cli_args.epochs - 10:  # best val loss
                 best_loss = val_loss
                 torch.save(
                     {
@@ -296,7 +344,7 @@ class NoduleTrainingApp:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                     },
-                    os.path.join(self.model_output_dir, "best_loss_model.pth"),
+                    os.path.join(self.model_output_dir, f"best_loss_model_{epoch_ndx}.pth"),
                 )
 
     def train_epoch(self, epoch_ndx: int, train_dl: DataLoader) -> torch.Tensor:
@@ -372,6 +420,7 @@ class NoduleTrainingApp:
         logits_g = self.model(input_g)
         probability_g = torch.softmax(logits_g, dim=1)
         loss_func = nn.CrossEntropyLoss()
+        # loss_func = FocalLoss(to_onehot_y=True, alpha=0.75)
         loss_g = loss_func(logits_g, label_g)
 
         start_ndx = batch_ndx * batch_size
@@ -436,8 +485,10 @@ class NoduleTrainingApp:
         metrics_dict["pr/f1_score"] = np.divide(
             2 * (precision * recall), precision + recall, where=(precision + recall) != 0
         )
-        
-        fpr, tpr, _ = roc_curve(metrics[METRICS_LABEL_NDX].detach().numpy(), metrics[METRICS_PRED_NDX].detach().numpy())
+
+        fpr, tpr, _ = roc_curve(
+            metrics[METRICS_LABEL_NDX].detach().numpy(), metrics[METRICS_PRED_NDX].detach().numpy()
+        )
         roc_auc = auc(fpr, tpr)
         metrics_dict["pr/auc_roc"] = roc_auc
 
@@ -473,12 +524,14 @@ class NoduleTrainingApp:
                 **metrics_dict,
             )
         )
-        total_norm = 0.0
-        for p in self.model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        metrics_dict["total_norm"] = total_norm**0.5
+        # total_norm = 0.0
+        # for p in self.model.parameters():
+        #     if p.grad is not None:
+        #         param_norm = p.grad.data.norm(2)
+        #         total_norm += param_norm.item() ** 2
+        # metrics_dict["total_norm"] = total_norm**0.5
+        
+        # if epoch_ndx % 5 == 0:
         for name, value in metrics_dict.items():
             self.writer.add_scalar(f"{name}/{mode_str}", value, epoch_ndx)
 

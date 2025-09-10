@@ -6,13 +6,14 @@ import logging
 import os
 import pickle
 import random
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import pandas as pd
 import SimpleITK as sitk
 import numpy as np
 
 from constants import EXCLUDE_NODULE_FILES, CT_AIR, CT_BONE, EXCLUDE_PRASAD_IDS
+
 
 class NoSeg(Exception):
     pass
@@ -65,10 +66,19 @@ class NoduleImage(ABC):
         pass
 
     @abstractmethod
-    def nodule_segmentation_image(self) -> sitk.Image:
+    def nodule_segmentation_image(self, seg_path: Optional[str]) -> sitk.Image:
         pass
 
     import SimpleITK as sitk
+
+
+    def preprocessed_whole_volume(self):
+        ct = self.image
+        ct = sitk.Clamp(ct, ct.GetPixelIDValue(), CT_AIR, CT_BONE)
+        ct = sitk.Normalize(ct)
+        ct = sitk.RescaleIntensity(ct, 0, 1)
+        return ct
+
 
     def extract_fixed_size_nodule(self, box_size: List[int], preprocess: bool = True):
         """
@@ -92,24 +102,36 @@ class NoduleImage(ABC):
 
         def get_box_from_physical_point(image, point):
 
-            spacing = image.GetSpacing()
-            center = image.TransformPhysicalPointToIndex(point)
+            spacing = image.GetSpacing()  # physical spacing per axis (x,y,z)
+            center_index = image.TransformPhysicalPointToIndex(point)
 
-            # Calculate half the box size in pixels for each dimension
-            # print(box_size, spacing)
-            half_box_size_pixels = [int((box_size[i] / spacing[i]) / 2) for i in range(3)]
+            # Half box size in voxels
+            half_box_voxels = [int((box_size[i] / spacing[i]) / 2) for i in range(3)]
 
-            # Calculate the starting and ending indices for the box
-            start = [int(center[i] - half_box_size_pixels[i]) for i in range(3)]
-            end = [int(center[i] + half_box_size_pixels[i]) for i in range(3)]
+            # Compute start/end indices (may go out of bounds)
+            start = [center_index[i] - half_box_voxels[i] for i in range(3)]
+            end = [center_index[i] + half_box_voxels[i] for i in range(3)]
 
-            # Ensure the indices are within the image bounds
-            start = [max(0, min(start[i], image.GetSize()[i] - 1)) for i in range(3)]
-            end = [max(0, min(end[i], image.GetSize()[i] - 1)) for i in range(3)]
+            # Actual image size
+            size = image.GetSize()
+
+            # Compute how much padding is needed on each side
+            pad_lower = [max(0, -start[i]) for i in range(3)]
+            pad_upper = [max(0, end[i] - size[i] + 1) for i in range(3)]
+
+            # Clamp start/end to valid indices
+            start = [max(0, start[i]) for i in range(3)]
+            end = [min(size[i]-1, end[i]) for i in range(3)]
 
             # Extract the region
-            box = image[start[0] : end[0], start[1] : end[1], start[2] : end[2]]
-            return box
+            roi_size = [end[i]-start[i]+1 for i in range(3)]
+            roi = sitk.RegionOfInterest(image, size=roi_size, index=start)
+
+            # Pad if needed
+            if any(pad_lower) or any(pad_upper):
+                roi = sitk.ConstantPad(roi, pad_lower, pad_upper, 0)
+            
+            return roi
 
         ct_box = get_box_from_physical_point(ct, self.center_lps)
         # seg_box = get_box_from_physical_point(self.nodule_segmentation_image(), self.center_lps)
@@ -165,9 +187,9 @@ class NoduleImage(ABC):
         return int(np.max(segs))
 
     def extract_bounding_box_nodule(
-        self, preprocess: bool, dilation_mm: int, box_size: List[int]
+        self, preprocess: bool, dilation_mm: int, box_size: List[int], seg_path: Optional[str] = None,
     ) -> sitk.Image:
-        segmentation_image = self.nodule_segmentation_image()
+        segmentation_image = self.nodule_segmentation_image(seg_path)
         labeled_segmentation_image = sitk.ConnectedComponent(segmentation_image)
         segmentation_id = self.get_connected_component_id_for_nodule(labeled_segmentation_image)
         if segmentation_id == 0:
@@ -222,8 +244,10 @@ class NRRDNodule(NoduleImage):
         image = reader.Execute()
         return image
 
-    def nodule_segmentation_image(self) -> sitk.Image:
-        if "etay" in self.image_file_path:
+    def nodule_segmentation_image(self, seg_path: Optional[str] = None) -> sitk.Image:
+        if seg_path is not None:
+            seg_file = seg_path
+        elif "etay" in self.image_file_path:
             nod_id = os.path.basename(self.image_file_path).split("nod")[1].split(".")[0]
             seg_file = f"/data/kaplinsp/test_nnunet/lung_{nod_id}.nii.gz"
         else:
@@ -257,6 +281,7 @@ class NoduleInfoTuple:
     center_lps: Coord3D
     file_path: str
     image_type: NoduleImage
+    seg_file: Optional[str] = None
 
 
 class SampleGeneratorStrategy(ABC):
@@ -285,8 +310,8 @@ class R17SampleGeneratorStrategy(SampleGeneratorStrategy):
                 #     logger.info(f"EXCLUDING: {nod_name}")
                 #     continue
 
-                # label = int(row[7])
-                label = 0
+                label = int(row[7])
+                # label = 0
                 nodule_infos.append(
                     NoduleInfoTuple(label, nod_name, center, file_path, NRRDNodule)
                 )
@@ -302,9 +327,9 @@ class SCLCSampleGenerator(SampleGeneratorStrategy):
 
         exclude_paths = ["/data/kaplinsp/transformation/A114.nrrd"]
         coord_df = pd.read_csv(coord_file, index_col=False)
-        
+
         coord_df = coord_df[(coord_df["label"] != 2) & (~coord_df["path"].isin(exclude_paths))]
-        
+
         return list(
             coord_df.apply(
                 lambda row: NoduleInfoTuple(
@@ -317,9 +342,54 @@ class SCLCSampleGenerator(SampleGeneratorStrategy):
                 axis=1,
             ).to_numpy()
         )
-        
-    
 
+class ZaraNoduleGenerator(SampleGeneratorStrategy):
+
+    def generate_nodule_info():
+        coord_df = pd.read_csv("/data/kaplinsp/zara_dataset.csv")
+        # exclude = [
+        #     # "/data/shastra1/Data_zara/SC_Zara/SC_002 .nrrd"
+        #     "/data/shastra1/Data_zara/SC_Zara/SC_028.nrrd",
+        #     "/data/shastra1/Data_zara/SC_Zara/SC_040 .nrrd",
+        #     ""
+
+        # ]
+        # exclude = [
+            # "/data/shastra1/Data_zara/SC_Zara/SC_002 .nrrd"
+            # "SC_028",
+        #     "SC_040",
+        #     "SC_048",
+        #     "SC_064",
+        #     "SC_073",
+        #     "SC_102",
+        #     "SC_104",
+        #     "SC_114",
+        #     "SC_115",
+        #     "SC_125",
+        #     "SC_128",
+        #     "SC_134",
+        #     "SC_135",
+        # ]
+        df = pd.read_csv("/data/kaplinsp/sc_zara_annotations.csv")
+        df = df[(df["slice thickness"] != "1.25") | (df["small cell vs mixed"] != "SC")]
+        ids = df[~df['name'].isna()]['name'].tolist() + ["SC_002"]
+        pattern = "|".join(ids)
+
+        # coord_df = coord_df[(~coord_df["image_file"].isin(exclude))]
+        coord_df = coord_df[~coord_df["image_file"].str.contains(pattern, case=False, na=False)]
+        return list(
+            coord_df.apply(
+                lambda row: NoduleInfoTuple(
+                    row["label"],
+                    row["nodule_id"],
+                    (row["x"], row["y"], row["z"]),
+                    row["image_file"],
+                    NRRDNodule,
+                    row["seg_file"]
+                ),
+                axis=1
+            ).to_numpy()
+        )
 
 class PrasadSampleGeneratoryStrategy(SampleGeneratorStrategy):
     def generate_nodule_info() -> List[NoduleInfoTuple]:

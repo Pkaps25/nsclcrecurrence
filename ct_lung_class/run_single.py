@@ -9,7 +9,7 @@ def main():
     mp.set_start_method("spawn")
     parser = create_argument_parser()
     cli_args = parser.parse_args()
-    run_data = list(DataManager(cli_args.k_folds, cli_args.val_ratio, cli_args.dataset).split())
+    run_data = list(DataManager(cli_args.k_folds, cli_args.val_ratio, cli_args.test_ratio, cli_args.dataset).split())
     NoduleTrainingApp(cli_args).main(cli_args.device, run_data, 1)
 
 
